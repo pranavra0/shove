@@ -28,7 +28,7 @@ Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practi
 | F11 / F12 | Save replay / replay it after leaving an online session |
 | M | Toggle music during gameplay |
 
-The portable default renderer is Compatibility/OpenGL. Directional shadows, distance fog, procedural sky and geometry-backed neon halos do not require Forward+. Native environment glow is enabled with `--rendering-method forward_plus` on supported graphics drivers.
+The portable default renderer is Compatibility/OpenGL. The default white-model presentation uses flat outlined primitives, a subtle world-space grid, hard directional shadows and a two-tone horizon. Decorative particles are disabled; gameplay hitstop, small shake and speed FOV remain toggleable in F1.
 
 ## Host / Join (2–8 players)
 

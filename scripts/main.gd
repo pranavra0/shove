@@ -478,7 +478,7 @@ func capture_scenario(scenario: String) -> Variant:
 		camera.global_position = Tuning.CAMERA_MENU_POSITION
 		camera.look_at(Tuning.CAMERA_MENU_TARGET)
 		return true
-	start_offline(7 if scenario == "hud" else 5)
+	start_offline(7 if scenario == "hud" else (0 if scenario == "character" else (1 if scenario == "impact" else 5)))
 	flow.phase = "playing"
 	menu_overlay.hide()
 	var placements: Array = [Vector3(-2, 0, 7), Vector3(0, 0, 4), Vector3(5, 0, 3), Vector3(-6, 0, -2), Vector3(7, 0, -5), Vector3(-3, 0, -7), Vector3(11, 0, 7), Vector3(-11, 0, 5)]
@@ -526,6 +526,9 @@ func capture_scenario(scenario: String) -> Variant:
 	if scenario in ["arena", "hud", "tuning"]:
 		camera.global_position = Vector3(34, 18, 38)
 		camera.look_at(Vector3(0, -3, 0))
+	elif scenario == "character":
+		camera.global_position = world.players[local_id].position + Vector3(1.4, 1.0, -3.0)
+		camera.look_at(world.players[local_id].position + Vector3.UP * 0.9)
 	elif scenario == "ko":
 		camera.global_position = Vector3(28, 7, 18)
 		camera.look_at(Vector3(17, -3, 2))

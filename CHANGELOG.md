@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3 M1 — White-model visual reset
+
+- Replaced neon/debris/crystal/cloud presentation with neutral outlined geometry, a subtle world-space grid, two flat horizon tones and hard white directional shadows. Compatibility materials use bounded diffuse lighting so the grid remains visible.
+- Simplified avatars to a capsule, facing block and floating hands. Disabled decorative bursts/trails/popups by default; reduced toggleable hitstop, shake and speed FOV.
+- Added isolated character/two-player capture staging and committed rendered evidence in `docs/shots/m1/`; inspected arena, fight and close-up. Actual projectile-flight capture depends on the M3 projectile simulation and remains tracked there.
+- Verified all eight headless suites, actual scene menu-to-rematch smoke, and rendered capture scenarios on Godot 4.7.2. No GDScript language server is configured; engine import/runtime gates provide diagnostics.
+
 ## Phase 1
 
 - Added a runnable Godot 4 code-generated movement sandbox with fixed 64 Hz simulation, Source-style ground acceleration/friction and air acceleration cap, auto-hop, and steep-slope rejection.
