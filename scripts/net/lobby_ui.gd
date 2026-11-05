@@ -12,18 +12,18 @@ func setup(owner: Node) -> void:
 	_stats_layer.layer = 4
 	app.add_child(_stats_layer)
 	_stats_label = Label.new()
-	_stats_label.add_theme_font_size_override("font_size", 14)
-	_stats_label.add_theme_color_override("font_color", Color("a5e9ea"))
-	_stats_label.add_theme_color_override("font_shadow_color", Color.BLACK)
-	_stats_label.add_theme_constant_override("shadow_offset_x", 2)
-	_stats_label.add_theme_constant_override("shadow_offset_y", 2)
+	_stats_label.add_theme_font_size_override("font_size", 12)
+	_stats_label.add_theme_color_override("font_color", Color("#dddddd"))
+	_stats_label.add_theme_color_override("font_shadow_color", Color.TRANSPARENT)
+	_stats_label.add_theme_constant_override("shadow_offset_x", 0)
+	_stats_label.add_theme_constant_override("shadow_offset_y", 0)
 	_stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_stats_layer.add_child(_stats_label)
 
 func show_setup(hosting: bool) -> void:
 	app.flow.phase = "setup"
 	app._clear_menu("Host a match" if hosting else "Join a match")
-	app._menu_label("2–8 players · authoritative ENet / UDP")
+	app._menu_label("2–8 players")
 	app._menu_field("Player name", "PlayerName", "Player")
 	var colors := OptionButton.new()
 	colors.name = "PlayerColor"
@@ -64,8 +64,7 @@ func show_lobby() -> void:
 	var net: NetSession = app.network
 	app.local_id = net.local_id
 	app.flow.phase = "lobby"
-	app._clear_menu("Lobby / %s" % ("HOST" if net.hosting else "CONNECTED"))
-	app._menu_label("Ready up. The host starts the countdown.")
+	app._clear_menu("Lobby")
 	var ids: Array = net.members.keys()
 	ids.sort()
 	var human_count: int = 0
@@ -75,13 +74,11 @@ func show_lobby() -> void:
 			human_count += 1
 		var row := HBoxContainer.new()
 		var label := Label.new()
-		label.text = "● %s%s" % [member.name, " (you)" if id == net.local_id else ""]
+		label.text = "%s%s" % [member.name, " (you)" if id == net.local_id else ""]
 		label.custom_minimum_size.x = 225
-		label.add_theme_color_override("font_color", Tuning.HUD_PLAYER_COLORS[posmod(int(member.color), Tuning.HUD_PLAYER_COLORS.size())])
 		row.add_child(label)
 		var status := Label.new()
 		status.text = "BOT" if member.get("bot", false) else ("READY" if member.ready else "WAITING")
-		status.add_theme_color_override("font_color", Color("80e7ac") if member.ready else Color("f6b96c"))
 		row.add_child(status)
 		app.menu_panel.add_child(row)
 	if net.members.has(net.local_id):
@@ -123,7 +120,6 @@ func show_pause(value: bool) -> void:
 		app.menu_overlay.hide()
 	else:
 		app._clear_menu("Online match continues")
-		app._menu_label("This menu releases your input; the server does not pause.")
 		app._menu_button("Resume", "Resume", show_pause.bind(false))
 		app._menu_button("Leave session", "LeaveSession", app.show_menu)
 	app._sync_cursor()
@@ -131,13 +127,11 @@ func show_pause(value: bool) -> void:
 func show_winner() -> void:
 	var winner: int = int(app.flow.winner)
 	var name: String = str(app.network.members.get(winner, {}).get("name", "No one"))
-	app._clear_menu("You win!" if winner == app.local_id else ("Draw" if winner == -1 else name + " wins!"))
-	app._menu_label("Authoritative result · every stock settled.")
+	var result: String = "It’s a draw." if winner == -1 else ("You win." if winner == app.local_id else name + " wins.")
+	app._clear_menu(result)
 	if app.network.hosting:
 		app._menu_button("Rematch", "Rematch", func() -> void: app.network.start_match())
 		app._menu_button("Return to lobby", "ReturnLobby", app.network.return_to_lobby)
-	else:
-		app._menu_label("Waiting for the host to start a rematch.")
 	app._menu_button("Leave session", "LeaveSession", app.show_menu)
 	app._sync_cursor()
 

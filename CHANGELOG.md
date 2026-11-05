@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3 M2 — Minimal HUD and menus
+
+- Replaced ornate player cards with steady damage numbers/discrete color steps and filled stock squares; added a compact speed meter, glyph-only cooldown bars and outlined edge triangles.
+- Rebuilt menus as aligned transparent option lists with underline selection; reduced countdown/feed/results to single lines and matched F1 controls to the flat neutral theme.
+- Captured and inspected four-player HUD, menu, tuning panel and winner surfaces in `docs/shots/m2/`. Corrected low-contrast HUD text and duplicate winner text found in screenshots.
+- All eight headless suites and the actual offline menu-to-rematch smoke pass on Godot 4.7.2.
+
 ## v0.3 M1 — White-model visual reset
 
 - Replaced neon/debris/crystal/cloud presentation with neutral outlined geometry, a subtle world-space grid, two flat horizon tones and hard white directional shadows. Compatibility materials use bounded diffuse lighting so the grid remains visible.

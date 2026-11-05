@@ -94,19 +94,15 @@ func show_menu() -> void:
 	_clear_players()
 	_sync_cursor()
 	_clear_menu("SHOVE")
-	_menu_label("M O M E N T U M   I S   A   W E A P O N")
-	_menu_label("Build speed. Pick your moment.\nSend your friends into the void.")
 	_menu_button("Play vs Bots", "PlayBots", _show_offline_setup)
 	_menu_button("Host", "Host", _show_network_setup.bind(true))
 	_menu_button("Join", "Join", _show_network_setup.bind(false))
 	_menu_button("Tuning", "Tuning", _show_tuning)
 	_menu_button("Quit", "Quit", func() -> void: get_tree().quit())
-	_menu_label("WASD  /  SPACE hop  /  E shove\nF1 live tuning  /  ESC pause")
 
 func _show_offline_setup() -> void:
 	flow.phase = "setup"
 	_clear_menu("Offline setup")
-	_menu_label("Free-for-all: you against 1–7 bots, or practice alone.")
 	var bots := OptionButton.new()
 	bots.name = "BotCount"
 	for count in range(1, 8):
@@ -242,7 +238,6 @@ func _set_paused(value: bool) -> void:
 		menu_overlay.hide()
 		return
 	_clear_menu("Paused")
-	_menu_label("The offline match is paused.")
 	_menu_button("Resume", "Resume", _set_paused.bind(false))
 	_menu_button("Restart match", "Restart", _rematch)
 	_menu_button("Main menu", "MainMenu", show_menu)
@@ -259,9 +254,8 @@ func _show_winner() -> void:
 		network_ui.show_winner()
 		return
 	var winner: int = int(flow.winner)
-	var title: String = "Draw" if winner < 0 else ("You win!" if winner == local_id else "Bot %d wins!" % winner)
-	_clear_menu(title)
-	_menu_label("Round complete — all stocks have been settled.")
+	var result: String = "It’s a draw." if winner < 0 else ("You win." if winner == local_id else "Bot %d wins." % winner)
+	_clear_menu(result)
 	_menu_button("Rematch", "Rematch", _rematch)
 	_menu_button("Main menu", "MainMenu", show_menu)
 
@@ -357,17 +351,16 @@ func _clear_menu(title: String) -> void:
 		menu_panel.remove_child(child)
 		child.queue_free()
 	var heading := _menu_label(title)
-	heading.add_theme_font_size_override("font_size", 30)
-	heading.add_theme_color_override("font_color", Color("#edfaf4"))
-	if title == "SHOVE":
-		heading.add_theme_font_size_override("font_size", 76)
+	heading.add_theme_font_size_override("font_size", 18)
+	heading.add_theme_color_override("font_color", Color("#eeeeee"))
 	menu_overlay.anchor_right = 0.43 if flow.get("phase", "menu") in ["menu", "setup"] else 1.0
 	menu_overlay.show()
 
 func _menu_label(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
-	label.add_theme_font_size_override("font_size", Tuning.HUD_FONT_SIZE)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	label.add_theme_font_size_override("font_size", 14)
 	menu_panel.add_child(label)
 	return label
 
@@ -375,12 +368,16 @@ func _menu_button(text: String, node_name: String, action: Callable) -> Button:
 	var button := Button.new()
 	button.name = node_name
 	button.text = text
-	button.custom_minimum_size = Vector2(330, 48)
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.custom_minimum_size = Vector2(250, 32)
 	if action.is_valid():
 		button.pressed.connect(action)
-	button.add_theme_font_size_override("font_size", 20)
+	button.add_theme_font_size_override("font_size", 14)
 	button.pressed.connect(func() -> void: synth.ui_click())
 	menu_panel.add_child(button)
+	if not menu_panel.find_children("*", "Button", true, false).any(func(child: Node) -> bool: return child != button and (child as Control).has_focus()):
+		button.grab_focus()
 	return button
 
 func _menu_field(title: String, node_name: String, value: String) -> void:
@@ -423,31 +420,42 @@ func _build_camera() -> void:
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	var theme := Theme.new()
-	theme.default_font_size = 19
+	theme.default_font_size = 14
+	theme.set_color("font_color", "Label", Color("#eeeeee"))
+	theme.set_color("font_color", "Button", Color("#eeeeee"))
+	theme.set_color("font_hover_color", "Button", Color("#ffffff"))
+	theme.set_color("font_pressed_color", "Button", Color("#ffffff"))
+	theme.set_color("font_disabled_color", "Button", Color("#888888"))
+	theme.set_color("font_color", "OptionButton", Color("#eeeeee"))
+	theme.set_color("font_hover_color", "OptionButton", Color("#ffffff"))
+	theme.set_color("font_color", "LineEdit", Color("#eeeeee"))
+	theme.set_color("font_placeholder_color", "LineEdit", Color("#999999"))
+	theme.set_color("font_color", "SpinBox", Color("#eeeeee"))
+	theme.set_color("font_color", "CheckButton", Color("#eeeeee"))
 	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color("#173b49")
-	normal.border_color = Color("#366170")
-	normal.set_border_width_all(1)
-	normal.set_corner_radius_all(8)
-	normal.content_margin_left = 18
-	normal.content_margin_right = 18
-	normal.content_margin_top = 10
-	normal.content_margin_bottom = 10
+	normal.bg_color = Color(0, 0, 0, 0)
+	normal.content_margin_left = 8
+	normal.content_margin_right = 8
+	normal.content_margin_top = 4
+	normal.content_margin_bottom = 4
 	var hover: StyleBoxFlat = normal.duplicate()
-	hover.bg_color = Color("#286576")
-	hover.border_color = Color("#62e7e4")
-	var pressed: StyleBoxFlat = normal.duplicate()
-	pressed.bg_color = Color("#b44e4a")
+	hover.border_color = Color("#eeeeee")
+	hover.border_width_bottom = 1
+	var pressed: StyleBoxFlat = hover.duplicate()
 	theme.set_stylebox("normal", "Button", normal)
 	theme.set_stylebox("hover", "Button", hover)
 	theme.set_stylebox("pressed", "Button", pressed)
 	theme.set_stylebox("focus", "Button", hover)
 	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.025, 0.065, 0.09, 0.93)
-	panel_style.set_corner_radius_all(14)
-	panel_style.border_color = Color("#315664")
-	panel_style.set_border_width_all(1)
+	panel_style.bg_color = Color(0.04, 0.04, 0.04, 0.72)
+	panel_style.content_margin_left = 14
+	panel_style.content_margin_right = 14
+	panel_style.content_margin_top = 12
+	panel_style.content_margin_bottom = 12
 	theme.set_stylebox("panel", "PanelContainer", panel_style)
+	for type_name in ["OptionButton", "LineEdit", "SpinBox", "CheckButton"]:
+		for style_name in ["normal", "hover", "pressed", "focus"]:
+			theme.set_stylebox(style_name, type_name, normal)
 	add_child(layer)
 	menu_overlay = CenterContainer.new()
 	menu_overlay.name = "MenuOverlay"
@@ -478,10 +486,10 @@ func capture_scenario(scenario: String) -> Variant:
 		camera.global_position = Tuning.CAMERA_MENU_POSITION
 		camera.look_at(Tuning.CAMERA_MENU_TARGET)
 		return true
-	start_offline(7 if scenario == "hud" else (0 if scenario == "character" else (1 if scenario == "impact" else 5)))
+	start_offline(3 if scenario == "hud" else (0 if scenario == "character" else (1 if scenario == "impact" else 5)))
 	flow.phase = "playing"
 	menu_overlay.hide()
-	var placements: Array = [Vector3(-2, 0, 7), Vector3(0, 0, 4), Vector3(5, 0, 3), Vector3(-6, 0, -2), Vector3(7, 0, -5), Vector3(-3, 0, -7), Vector3(11, 0, 7), Vector3(-11, 0, 5)]
+	var placements: Array = [Vector3(-2, 0, 1), Vector3(0, 0, -1), Vector3(2, 0, 1), Vector3(0, 0, 3), Vector3(7, 0, -5), Vector3(-3, 0, -7), Vector3(11, 0, 7), Vector3(-11, 0, 5)]
 	var i: int = 0
 	for id in world.players:
 		var p: Dictionary = world.players[id]
@@ -523,7 +531,10 @@ func capture_scenario(scenario: String) -> Variant:
 		player_views[id].render_state(world.players[id], 1.0, presentation_time)
 	game_hud.render_frame(world, flow, local_id, camera, 1.0 if scenario == "bhop" else 0.0)
 	camera.fov = Tuning.CAMERA_FOV + (Tuning.CAMERA_FOV_BOOST if scenario == "bhop" else 0.0)
-	if scenario in ["arena", "hud", "tuning"]:
+	if scenario == "hud":
+		camera.global_position = Vector3(14, 10, 17)
+		camera.look_at(Vector3(0, -2, 1))
+	elif scenario in ["arena", "tuning"]:
 		camera.global_position = Vector3(34, 18, 38)
 		camera.look_at(Vector3(0, -3, 0))
 	elif scenario == "character":

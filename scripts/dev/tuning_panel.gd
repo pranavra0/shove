@@ -21,7 +21,30 @@ func setup(app: Node) -> void:
 		return
 	layer = 90
 	_root = PanelContainer.new()
-	_root.theme = app.menu_overlay.theme
+	var tuning_theme: Theme = app.menu_overlay.theme.duplicate()
+	tuning_theme.default_font_size = 13
+	var neutral := StyleBoxFlat.new()
+	neutral.bg_color = Color(0.075, 0.085, 0.095, 0.96)
+	neutral.border_color = Color(0.28, 0.30, 0.33, 0.9)
+	neutral.set_border_width_all(1)
+	tuning_theme.set_stylebox("panel", "PanelContainer", neutral)
+	var button_style := StyleBoxFlat.new()
+	button_style.bg_color = Color(0.12, 0.13, 0.15, 0.96)
+	button_style.border_color = Color(0.30, 0.32, 0.35, 0.9)
+	button_style.set_border_width_all(1)
+	button_style.content_margin_left = 9
+	button_style.content_margin_right = 9
+	button_style.content_margin_top = 5
+	button_style.content_margin_bottom = 5
+	var button_hover: StyleBoxFlat = button_style.duplicate()
+	button_hover.bg_color = Color(0.19, 0.20, 0.22, 0.98)
+	var button_pressed: StyleBoxFlat = button_style.duplicate()
+	button_pressed.bg_color = Color(0.09, 0.10, 0.11, 0.98)
+	tuning_theme.set_stylebox("normal", "Button", button_style)
+	tuning_theme.set_stylebox("hover", "Button", button_hover)
+	tuning_theme.set_stylebox("focus", "Button", button_hover)
+	tuning_theme.set_stylebox("pressed", "Button", button_pressed)
+	_root.theme = tuning_theme
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.offset_left = 24.0
 	_root.offset_top = 24.0
@@ -33,12 +56,11 @@ func setup(app: Node) -> void:
 		margin.add_theme_constant_override("margin_" + side, 12)
 	_root.add_child(margin)
 	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
 	margin.add_child(body)
-	var title := Label.new()
-	title.text = "LIVE TUNING — F1 closes · simulation continues"
-	body.add_child(title)
 	_search = LineEdit.new()
 	_search.placeholder_text = "Search tuning fields…"
+	_search.custom_minimum_size.y = 30
 	_search.text_changed.connect(_filter)
 	body.add_child(_search)
 	var actions := HBoxContainer.new()
@@ -65,10 +87,10 @@ func setup(app: Node) -> void:
 	presets.add_child(picker)
 	if app.has_method("replay_latest"):
 		_button(presets, "Replay latest", func(): _app.call("replay_latest"))
-	if app.has_method("save_replay"):
 		_button(presets, "Save replay", func(): _app.call("save_replay"))
 	_status = Label.new()
 	_status.text = "Changes apply immediately. Presets save to user://presets/."
+	_status.add_theme_color_override("font_color", Color(0.66, 0.68, 0.71))
 	body.add_child(_status)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -76,9 +98,13 @@ func setup(app: Node) -> void:
 	body.add_child(scroll)
 	_list = VBoxContainer.new()
 	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list.add_theme_constant_override("separation", 3)
 	scroll.add_child(_list)
 	var invariants := Label.new()
 	invariants.text = "Read-only: TICK_RATE = %s · FIXED_DELTA = %s · METRES_TO_SOURCE_UNITS = %s" % [Tuning.TICK_RATE, Tuning.FIXED_DELTA, Tuning.METRES_TO_SOURCE_UNITS]
+	invariants.add_theme_font_size_override("font_size", 12)
+	invariants.add_theme_color_override("font_color", Color(0.58, 0.60, 0.63))
+	invariants.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(invariants)
 	_rebuild()
 	_root.hide()
@@ -117,20 +143,26 @@ func _rebuild() -> void:
 		var group: String = name.get_slice("_", 0)
 		if not _groups.has(group):
 			var heading := Label.new()
-			heading.text = "— " + group + " —"
+			heading.text = group
+			heading.add_theme_font_size_override("font_size", 12)
+			heading.add_theme_color_override("font_color", Color(0.62, 0.64, 0.67))
 			_list.add_child(heading)
 			_groups[group] = heading
 		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
 		_list.add_child(row)
 		_rows[name] = row
 		var label := Label.new()
 		label.text = name
-		label.custom_minimum_size.x = 340.0
+		label.custom_minimum_size.x = 300.0
+		label.add_theme_color_override("font_color", Color(0.78, 0.79, 0.81))
 		label.tooltip_text = name
 		row.add_child(label)
 		_editor(row, name, Tuning.get(name))
 	var computed := Label.new()
 	computed.text = "MAX_GROUND_ANGLE (computed, read-only): %.6f radians" % Tuning.MAX_GROUND_ANGLE
+	computed.add_theme_font_size_override("font_size", 12)
+	computed.add_theme_color_override("font_color", Color(0.58, 0.60, 0.63))
 	_list.add_child(computed)
 	_filter(_search.text)
 
