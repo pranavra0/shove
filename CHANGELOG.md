@@ -37,3 +37,15 @@
 - Added exact replay-lite recording/persistence/playback, including initial World, full tuning and per-frame live tuning patches, automatic winner save and final-state verification.
 - Added typed tuning/replay regression suites and an actual-scene live panel/replay test. Corrected empty-search filtering and float32 input normalization exposed by real UI/bot recordings.
 - All headless tests, scene smoke and dev-hotkey smoke pass. Rendered and inspected tuning controls, eight-player HUD, debug gizmos, countdown and winner captures.
+
+## M5 — Authoritative online matches
+
+- Added ENet listen-server Host/Join with names/colors, ready controls, host start, bot fill, lobby return, disconnect cleanup and online rematches for 2–8 total players.
+- Added 64 Hz server authority, 32 Hz snapshots, tick-tagged redundant commands/ACKs, local movement/windup prediction, reconciliation, smoothed correction and remote snapshot interpolation. Shove hits, damage and stocks remain server-owned.
+- Added authoritative event delivery, reliable terminal snapshots, bounded compressed unreliable payloads, configurable latency/jitter/loss and a network stats overlay. Terminal snapshots clear pending prediction.
+- Added host input-stream replays and authoritative live tuning propagation, client-local presentation/network controls, focus-aware mouse capture and non-pausing online menus.
+- Fixed ramp side/high-edge entry falling through the base floor, added airborne wall/low-edge regressions, and reprojected spawns after live arena resizing. Added actual launch-distance acceptance: standing 7.491 m, full-speed bhop 11.275 m, high damage 15.255 m, momentum disabled 7.522 m.
+- All eight headless test suites and scene smoke passed. A real server plus two clients completed a natural match and rematch with 100 ms one-way latency, 10 ms jitter and 5% loss; stocks/winner matched on all peers. Two rendered peers completed the same flow, with live lobby/play/KO/winner/rematch images inspected.
+- Additional real-ENet menu smoke covered ready/color-capable setup, six-bot fill/eight-player play, non-pausing online menus, a negative-ID bot winner, return to lobby and host disconnect. Eight-player compressed snapshot regression measured 594 bytes.
+- Completed the runbook, limitations and ten tuning experiments. The project now lives at the repository root; existing user commits were preserved.
+- Re-ran the complete headless suite, scene smoke, three-process network regression and all ten screenshot scenarios from the relocated repository root; all passed, and the seven required capture surfaces were inspected.

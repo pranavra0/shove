@@ -40,3 +40,17 @@
 - InputCmd decoding preserves float32 unit-vector roundoff within a small epsilon rather than renormalizing an already normalized command. MovementSim still caps its own wish vector; exact bot input roundtrips now survive persistence.
 - Replay records a settings patch alongside the next command frame whenever live tuning changes, preserving entire normal matches across experiments. Playback applies those patches before each 1/64-second step and restores the user's previous settings afterward.
 - Explicit dev mutations restart recording from the resulting World as a new segment; they are not hidden commands in the normal InputCmd protocol. Structural art/audio settings rebuild their views without resetting authoritative player state.
+
+## M5 — Listen-server authority and deployment
+
+- ENet server ID 1 owns World and MatchSim; clients submit only their own finite, bounded, monotonic InputCmd sequences. Bot IDs start at -2, reserving -1 for no-target/draw sentinels. Names/colors/readiness remain lobby metadata, not simulation fields.
+- Unreliable inputs/snapshots receive artificial outbound delay/jitter/loss. Reliable ordered lobby/start/config/events/final packets are not permanently dropped by the simulator, avoiding stale starts and lost terminal outcomes across rematches.
+- Input bundles and full snapshots are compressed as bounded, object-free Variant payloads to fit the unreliable MTU. Decompression is capped; the eight-player regression packet is 594 bytes.
+- Prediction steps an isolated local player through the same World rules, preserving authoritative combat/stock state. Remote players use a 100 ms receive-time interpolation buffer. Terminal snapshots discard pending movement and interpolation history rather than simulating beyond the final result.
+- Client hitstop freezes presentation only; the server clock continues. Offline hitstop still pauses whole simulation ticks. Online menus never pause the server, and only a focused window captures the mouse.
+- Host tuning changes are sent reliably and recorded with the next authoritative input frame. Clients may change local cosmetic/camera/audio/network settings but not server simulation fields. Structural config signals fire before applying values so scene geometry/audio rebuild correctly.
+- Server disconnect handling starts a new replay segment after the external roster edit. Normal complete matches retain every accepted human/bot command. Replay does not preserve lobby names/colors and is verified within the same tested engine build.
+- A natural network regression initially exposed a terrain hole rather than a transport bug. Ramp low edges are continuous floors; raised side/high edges are walls, including airborne entry. Spawns are clamped/reprojected against the current arena to stay finite after live resizing.
+- Full headless and two-window localhost runs passed with 100 ms one-way artificial latency/5% packet loss, and both peers observed a rematch. Direct-IP LAN/localhost is the tested deployment; matchmaking, NAT traversal and Internet hardening are outside this prototype.
+- The default windowed launch opened successfully, but this WSL environment lacked PulseAudio's `libpulse.so.0` and an ALSA device. Godot selected Dummy audio. PCM synthesis/playback controls were exercised; audible output was not auditioned and requires a working host audio driver.
+- The user moved the unchanged project from its nested directory to the repository root and committed the implementation. Continued work uses root-relative paths and preserves that history.

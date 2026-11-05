@@ -18,26 +18,56 @@ Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practi
 | Mouse | Third-person orbit/aim |
 | Space (hold) | Auto-bhop |
 | E / left mouse | Shove |
-| Escape | Pause/resume offline; release cursor |
+| Escape | Pause offline; open a non-pausing menu online |
 | F1 | Live tuning panel (simulation continues) |
-| F2 | Reset match |
-| F3 / F4 | Spawn / remove bot (up to eight players) |
-| F5 | Toggle quarter-speed simulation scheduling |
+| F2 | Reset offline match / host starts an online rematch |
+| F3 / F4 | Spawn / remove bot offline (up to eight players) |
+| F5 | Toggle quarter-speed offline simulation scheduling |
 | F6 / F7 / F8 | Hitboxes / velocity vectors / debug HUD |
-| F9 / F10 | Add 100% damage / teleport to center |
-| F11 / F12 | Save latest replay / replay it |
-| M | Toggle music |
+| F9 / F10 | Add 100% damage / teleport to center (offline) |
+| F11 / F12 | Save replay / replay it after leaving an online session |
+| M | Toggle music during gameplay |
 
 The portable default renderer is Compatibility/OpenGL. Directional shadows, distance fog, procedural sky and geometry-backed neon halos do not require Forward+. Native environment glow is enabled with `--rendering-method forward_plus` on supported graphics drivers.
+
+## Host / Join (2–8 players)
+
+Launch two instances with `godot --path .`.
+
+1. In the first, choose **Host**, enter a player name, color and UDP port (default **7777**), then **Host**.
+2. In the second, choose **Join**, enter **127.0.0.1** and the same port for localhost, then **Connect**. For LAN play, use the host's LAN IP and allow its UDP port through the firewall.
+3. Each human, including the host, toggles **Ready to play**. The host can select **Bot fill** up to eight total participants.
+4. The host chooses **Start match**. Countdown, ring-outs, stocks and winner are server-authoritative. The host can **Rematch** directly or **Return to lobby**.
+5. **Leave session** returns to the main menu; host disconnection closes clients cleanly.
+
+Both instances must run the same project/engine revision. This is a direct-IP listen server, not an Internet matchmaking/NAT-traversal service. Online Escape menus release local input without pausing the server. Only the focused window captures the mouse.
+
+The server simulates at 64 Hz and sends snapshots at `NET_SNAPSHOT_RATE` (32 Hz by default). Clients predict their own movement/windup, reconcile unacknowledged commands, and interpolate remote players with `NET_INTERPOLATION` (100 ms by default). Shove hit detection and all damage/stocks stay on the server.
+
+F1 exposes `NET_LATENCY_MS`, `NET_JITTER_MS` and `NET_PACKET_LOSS` (a fraction: `0.05` means 5%). These affect unreliable input/snapshot delivery; reliable lobby/start/events/final results remain reliable. The overlay shows RTT, received snapshot rate, correction magnitude, pending input depth and simulated drops.
+
 
 ## Tests and scene smoke
 
 ```sh
 tools/test.sh
 godot --headless --path . --script tests/scene_smoke.gd
+python3 tools/net_test.py --godot godot
 ```
 
 The runner imports script classes, runs every `tests/*_test.gd`, and fails on script errors as well as process failures. Scene smoke drives actual menu/setup/countdown/bot movement/KO/winner/rematch behavior. Simulation runs at a fixed 64 Hz; render callbacks only animate presentation.
+
+The network regression launches an actual ENet server and two headless clients with BotSim inputs, **100 ms one-way simulated latency, 10 ms jitter and 5% packet loss**. A compact one-stock arena fixture runs to a natural winner; all peers must agree on terminal stocks/winner and observe a fresh rematch countdown. Logs/results are written to a printed temporary directory outside the repository.
+
+To run two actual rendered peers and capture live lobby/play/KO/winner/rematch surfaces:
+
+```sh
+python3 tools/net_test.py --godot godot --gui \
+  --capture-dir /tmp/shove-online-review --hold-seconds 3
+```
+
+Choose a new, empty capture directory for each network run. This driver uses ordinary bot commands, not staged network outcomes. `--expected-clients=1..7` can change the headless peer count; the GUI driver intentionally uses two windows.
+
 
 ## Deterministic screenshots
 
@@ -59,10 +89,11 @@ Press **F1** or choose **Tuning** from the menu. Search by field name; fields ar
 - **Reset defaults** restores the factory script values.
 - **Copy diff** prints and copies changed `var NAME = value` declarations for replacing fields in `scripts/tuning.gd`.
 - Tick rate and derived conversion/angle fields are read-only. Structural arena/audio changes rebuild the affected presentation; animation/feel values update directly.
+- Online clients can edit local camera/audio/visual/network controls; simulation settings belong to the host. Host changes are transmitted authoritatively. World-mutation dev hotkeys remain offline-only, except host F2/rematch.
 
-Matches record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. No scene RNG or imported physics state is needed.
+Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. After leaving an online session, F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams.
 
-Dev mutations (spawn/remove bot, damage, teleport) start a new recording segment at the mutated World. Slow motion and hitstop affect playback scheduling, not the fixed simulation timestep.
+Dev mutations (spawn/remove bot, damage, teleport) and server-observed disconnections start a new recording segment at the changed World. Slow motion and hitstop affect scheduling, not the fixed simulation timestep. Replay reproduces simulation state, not online lobby names/colors.
 
 
 ## Architecture
@@ -72,6 +103,29 @@ Dev mutations (spawn/remove bot, damage, teleport) start a new recording segment
 - `scripts/main.gd`: fixed-tick orchestration, code-built menus and presentation integration.
 - `scripts/view/`: procedural arena, avatars, effects, HUD, shaders and cached synthesized PCM audio.
 - `scripts/dev/`: reflected tuning/presets, typed replay persistence and visual debug gizmos.
+- `scripts/net/`: ENet authority/lobby, bounded compressed wire payloads, prediction/reconciliation and remote interpolation.
 - `DECISIONS.md` / `CHANGELOG.md`: milestone tradeoffs and verification history.
 
-Host/Join connection fields are intentionally unavailable before the M5 networking cutover.
+## Known rough edges and verification limits
+
+- Primitive art and analytical collision are intentionally simple. Compatibility uses distance fog and geometry halos rather than volumetric fog/post-process bloom; the optional Forward+ glow path was not visually verified on this machine.
+- Local prediction intentionally excludes remote-player body collision and combat. The server resolves these and reconciles the client; crowded/laggy brawls remain a playtesting target.
+- Localhost was verified with three real headless peers, two rendered peers, and an eight-player bot-filled lobby/play smoke. Internet/NAT behavior and eight separate human clients were not exercised.
+- Audio samples, loop/mute behavior and playback state were verified. Audible output could not be auditioned here: the WSL environment lacked `libpulse.so.0` and an ALSA device, so Godot fell back to Dummy audio. Use a host with a working audio driver; on Ubuntu/WSLg, check `libpulse0` and the PulseAudio/WSLg connection. `--audio-driver Dummy` is appropriate for automated runs, not audible play.
+- Some Godot 4.7.2 Dummy-audio exits report a few WAV/playback resource leaks despite explicit player cleanup. Test runners reject script/runtime errors; expected invalid-preset warnings and this shutdown warning are documented separately.
+- Replay determinism is verified within the tested engine build. Cross-version/platform floating-point identity is not promised.
+
+## Ten tuning experiments
+
+Change one group at a time, save a named preset, then compare a recorded attack or match:
+
+1. **Momentum as a weapon:** `MOMENTUM_TRANSFER` **0.85 → 1.4**. Compare standing and full-speed bhop launches.
+2. **Air steering:** `AIR_SPEED_CAP` **0.762 → 1.5 → 3.2**; then try `AIR_ACCELERATION` **10 → 16**. Watch recoverability versus effortless speed gain.
+3. **Slippery landings:** `FRICTION` **4 → 2.5**, then `STOP_SPEED` **2.54 → 1.5**. Compare preserved speed with grounded precision.
+4. **Attack commitment:** `SHOVE_WINDUP` **0.10 → 0.07 / 0.14**, holding the active window fixed. Compare reactive hits with readable telegraphs.
+5. **Early versus late kills:** separately try `BASE_KB` **8 → 10** and `KB_SCALE` **0.16 → 0.22**. Compare low- and high-damage opponents.
+6. **Airtime and recovery:** `GRAVITY` **20.32 → 14**, then `KB_UP` **5 → 7**. Judge whether launches create counterplay or overly long falls.
+7. **Hitstun agency:** `HITSTUN` **0.30 → 0.20 / 0.40** and `HITSTUN_CONTROL` **0.15 → 0.35**. Compare launch readability with recovery control.
+8. **Bot personality:** `BOT_REACTION` **0.12 → 0.06 / 0.25** and `BOT_BHOP_SKILL` **0.75 → 0.35 / 0.95**. Compare aggressive pressure with approachable opponents.
+9. **Juice versus clarity:** `JUICE_HITSTOP_DURATION` **0.055 → 0.025 / 0.08**, then `JUICE_SHAKE_STRENGTH` **0.025 → 0.012 / 0.035**. Toggle either effect off as a readability baseline.
+10. **Network feel:** `NET_LATENCY_MS` **100 → 200**, `NET_PACKET_LOSS` **0.05 → 0.10**, then `NET_INTERPOLATION` **0.10 → 0.15**. Compare correction magnitude, pending depth and remote smoothness.
