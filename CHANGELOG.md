@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3 M4 — Kit-aware bots
+
+- Updated deterministic caller-owned BotSim behavior to lead target movement, route curve shots around obstructing walls, defend against projectiles with skill-gated shove deflection or walls, slam grounded opponents, and recover/steer safely near edges using shared Source movement.
+- Randomized bot kit assignments for offline match start, offline F3 additions, and host-filled online rosters before recording; capture mode seeds the offline roster RNG from participant IDs, and rematches retain assigned elements. The F3 input/dev-action smoke passed, confirming the new element in the initial tape while preserving the selected human element.
+- After the F3 RNG callsite repair, all 13 headless suites passed (exit 0). Offline scene smoke, natural bot combat smoke (32 frames, nine move activation events, eight projectiles, one hit and one wall block, no runtime errors), roster/capture/rematch lifecycle and impaired three-peer ENet match/rematch also passed. No scripted all-moves network proof is claimed. One ObjectDB shutdown warning reported six instances in bot combat and seven in the roster throwaway run.
+- M5 still owns full per-move/per-element tuning exposure and complete network move proof; M6 remains unimplemented.
+
 ## v0.3 M3 — Kits, abilities and projectiles
 
 - Added four selectable elemental kits with nine move slots each, kit-scaled movement/recovery, held/edge input handling, pitch-driven curve-shot spike/lob behavior, and horizontal/vertical walls. Projectile simulation covers kit-specific data, shove deflection, and wall/projectile contacts; World remains the pure authoritative simulation.

@@ -42,6 +42,7 @@ var _network_view_epoch: int = -1
 var _receiving_network_settings: bool = false
 var kit_entities: KitEntitiesView
 var selected_element: String = "earth"
+var _roster_rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
 	_build_world()
@@ -153,16 +154,27 @@ func start_match(ids: Array) -> void:
 	juice.clear()
 	game_hud.reset_match()
 	_last_countdown = -1
+	var is_rematch: bool = not world.is_empty() and ids == _match_ids
+	var rematch_elements: Dictionary = {}
+	if is_rematch:
+		for player_id in world.players:
+			rematch_elements[player_id] = str(world.players[player_id].element)
 	_match_ids = ids.duplicate()
 	bot_ids.clear()
 	bot_memory.clear()
 	world = World.create(ids)
-	var roster_rng := RandomNumberGenerator.new()
-	roster_rng.seed = 0x5EED + int(ids.hash())
+	if capture_mode:
+		_roster_rng.seed = 0x5EED + int(ids.hash())
+	else:
+		_roster_rng.randomize()
 	for player_id in world.players:
 		var id: int = int(player_id)
 		if not network.active:
-			var element: String = selected_element if id == local_id else Kits.ELEMENTS[roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)]
+			var element: String
+			if rematch_elements.has(player_id):
+				element = str(rematch_elements[player_id])
+			else:
+				element = selected_element if id == local_id else Kits.ELEMENTS[_roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)]
 			World.set_element(world, id, element)
 		player_views[player_id] = _build_player(id)
 		if id != local_id:
@@ -864,6 +876,7 @@ func _run_dev_actions() -> void:
 			var ids: Array = world.players.keys()
 			ids.append(id)
 			world.players[id] = World.create(ids).players[id]
+			World.set_element(world, id, Kits.ELEMENTS[_roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)])
 			player_views[id] = _build_player(id)
 			bot_ids.append(id)
 			_match_ids.append(id)

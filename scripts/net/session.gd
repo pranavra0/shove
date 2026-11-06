@@ -33,6 +33,7 @@ var _bot_memory: Dictionary = {}
 var _pending_settings: Dictionary = {}
 var _outbox: Array = []
 var _rng := RandomNumberGenerator.new()
+var _roster_rng := RandomNumberGenerator.new()
 var _sequence: int = 0
 var _serial: int = 0
 var _last_serial: int = -1
@@ -65,6 +66,7 @@ func host(port: int, player_name: String, color: int, element: String = "earth")
 	hosting = true
 	connected = true
 	local_id = 1
+	_roster_rng.randomize()
 	_rng.seed = Tuning.NET_SEED
 	_profile = _member(player_name, color, false, element)
 	members[1] = _profile.duplicate(true)
@@ -81,8 +83,8 @@ func join(address: String, port: int, player_name: String, color: int, element: 
 		return error
 	multiplayer.multiplayer_peer = _peer
 	active = true
+	_roster_rng.randomize()
 	_rng.seed = Tuning.NET_SEED
-	_started_at = _now()
 	return OK
 
 func close() -> void:
@@ -534,21 +536,20 @@ func _human_count() -> int:
 	return count
 
 func _sync_bots() -> void:
+	var existing_bots: Dictionary = {}
 	for id in members.keys():
 		if members[id].bot:
+			existing_bots[id] = members[id].duplicate(true)
 			members.erase(id)
 	bot_fill = clampi(bot_fill, 0, clampi(Tuning.NET_MAX_PLAYERS, 2, 8) - _human_count())
 	for index in range(bot_fill):
 		var bot_id: int = -index - 2
-		var profile := _member("Bot %d" % (index + 1), index + _human_count(), true, Kits.ELEMENTS[_bot_element_index(bot_id)])
+		if existing_bots.has(bot_id):
+			members[bot_id] = existing_bots[bot_id]
+			continue
+		var profile := _member("Bot %d" % (index + 1), index + _human_count(), true, Kits.ELEMENTS[_roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)])
 		profile.bot = true
 		members[bot_id] = profile
-
-func _bot_element_index(roster_id: int) -> int:
-	var value: int = (int(Tuning.NET_SEED) ^ (roster_id * 0x45d9f3b)) & 0x7fffffff
-	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
-	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
-	return posmod(value ^ (value >> 16), Kits.ELEMENTS.size())
 
 func _broadcast_lobby() -> void:
 	_broadcast("_lobby_rpc", {"members": members, "bots": bot_fill, "epoch": epoch, "lobby": str(flow.phase) == "lobby"}, true)

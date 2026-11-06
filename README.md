@@ -43,9 +43,11 @@ Four kits define distinct combat styles:
 - **Air:** fast, small shots with the highest knockback scale; momentum-preserving dash and two recoveries.
 
 The element is selected in offline setup or the online profile, and is part of simulation state.
+
+Bots choose from their assigned kit: they lead shots from the current target's motion, route curve shots around an obstructing wall, and can answer incoming threats with a probability-gated shove deflection or a wall. Edge avoidance and offstage recovery steer them toward safety; reaction delay, bhop skill and `BOT_DEFLECT_SKILL` tune aspects of their behavior. Offline match start and F3 bot-add assign an element from the dedicated roster RNG before replay recording begins; capture mode seeds that RNG from the participant IDs for reproducible assignment, and rematches retain the roster's elements.
 Each kit provides nine moves: basic shot, curve shot, quick fire, shove, high jump, down dash/slam, wall, horizontal dash and recovery. Basic shot, quick fire and shove are held controls; curve shot activates on release, while E, Ctrl, R and Shift activate on press. Releasing and repressing Space in air can request a recovery. Move requests are prioritized, cooldown-gated, and use the selected kit's move data. Aim pitch distinguishes curve-shot behavior: aiming down produces a spike and aiming up a lob. Walls are placed horizontally or vertically according to aim, and projectiles can be deflected by shove; deflection transfers ownership and increases speed/damage up to configured caps.
 
-Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. These are current implementation facts, not evidence that every per-move/per-element value has been exposed through the live editor or verified across the network.
+Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. Full per-move/per-element editor exposure, associated dev tools and scripted all-moves network proof remain M5 work; the bot-driven match/rematch is not proof of network use of every move.
 
 The portable default renderer is Compatibility/OpenGL. The default white-model presentation uses flat outlined primitives, a subtle world-space grid, hard directional shadows and a two-tone horizon. Decorative particles are disabled; gameplay hitstop, small shake and speed FOV remain toggleable in F1.
 
@@ -137,8 +139,9 @@ Dev mutations (spawn/remove bot, damage, teleport) and server-observed disconnec
 - Primitive art and analytical collision are intentionally simple.
 - Local prediction intentionally excludes remote-player body collision and combat. The server resolves these and reconciles the client; crowded/laggy brawls remain a playtesting target.
 - Internet/NAT behavior and eight separate human clients have not been exercised.
+- M4 bot acceptance passed after the F3 RNG repair: all 13 headless suites, scene smoke, F3 input/dev-action smoke, natural-combat bot smoke, roster/capture/rematch lifecycle and an impaired three-peer ENet match/rematch. The network run exercises match flow, not every move. Bot combat, roster and tuning-panel runs emitted ObjectDB shutdown warnings with variable instance counts despite no bot runtime errors.
 - Audio samples, loop/mute behavior and playback state were verified. Audible output could not be auditioned here: the WSL environment lacked `libpulse.so.0` and an ALSA device, so Godot fell back to Dummy audio. Use a host with a working audio driver; on Ubuntu/WSLg, check `libpulse0` and the PulseAudio/WSLg connection. `--audio-driver Dummy` is appropriate for automated runs, not audible play.
-- Some Godot 4.7.2 Dummy-audio exits report a few WAV/playback resource leaks despite explicit player cleanup. Test runners reject script/runtime errors; expected invalid-preset warnings and this shutdown warning are documented separately.
+- M6's three-lane control-point mode remains unimplemented. Some Godot 4.7.2 Dummy-audio and throwaway smoke exits report WAV/playback/ObjectDB resource warnings despite explicit player cleanup; test runners reject script/runtime errors, and these shutdown warnings are documented separately.
 - Replay determinism is within the same build; cross-version/platform floating-point identity is not promised.
 
 ## Ten tuning experiments
