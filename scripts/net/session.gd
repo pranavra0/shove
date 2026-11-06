@@ -20,6 +20,8 @@ var command_provider: Callable
 var stats: Dictionary = {"ping": 0.0, "snapshot_rate": 0.0, "correction": 0.0, "input_depth": 0, "dropped": 0}
 var recording: ReplayTape
 var epoch: int = 0
+# Reliable lobby/start/tuning payloads may contain the complete legal sparse kit override table.
+const RELIABLE_RAW_LIMIT: int = 131072
 
 var _peer: ENetMultiplayerPeer
 var _prediction: ClientPrediction
@@ -566,7 +568,7 @@ func _schedule(target: int, method: String, data: Dictionary, reliable: bool) ->
 		return
 	if reliable:
 		var raw: PackedByteArray = var_to_bytes(data)
-		if raw.is_empty() or raw.size() > 65536:
+		if raw.is_empty() or raw.size() > RELIABLE_RAW_LIMIT:
 			stats.dropped += 1
 			return
 		rpc_id(target, method, data)

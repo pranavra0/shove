@@ -1,0 +1,8 @@
+{
+  "KIT_OVERRIDES": {
+    "earth": {"basic_shot": {"damage": 10.0, "kb_base": 3.0, "kb_scale": 0.12, "speed": 18.0}},
+    "water": {"basic_shot": {"damage": 10.0, "kb_base": 3.0, "kb_scale": 0.12, "speed": 18.0}},
+    "fire": {"basic_shot": {"damage": 10.0, "kb_base": 3.0, "kb_scale": 0.12, "speed": 18.0}},
+    "air": {"basic_shot": {"damage": 10.0, "kb_base": 3.0, "kb_scale": 0.12, "speed": 18.0}}
+  }
+}

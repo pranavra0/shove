@@ -1,0 +1,9 @@
+{
+  "KIT_OVERRIDES": {
+    "air": {
+      "curve_shot": {"speed": 23.0, "curve_drift": 0.28, "homing": 0.3, "damage": 9.0},
+      "h_dash": {"speed": 17.0, "active": 0.3, "iframe_time": 0.12},
+      "recovery": {"recovery_up": 17.0, "recovery_horizontal": 13.0}
+    }
+  }
+}

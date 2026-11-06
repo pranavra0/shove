@@ -87,7 +87,8 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 	var threat: Dictionary = _incoming(world, id, player)
 	if not threat.is_empty():
 		var t: float = float(threat.time)
-		var deflect_time: float = Tuning.SHOVE_WINDUP + (Tuning.SHOVE_REACH + Tuning.SHOVE_RADIUS) / maxf(float(threat.speed), 0.001) + Tuning.BOT_DEFLECT_EARLY
+		var shove: Dictionary = Kits.move(str(player.element), "shove")
+		var deflect_time: float = float(shove.windup) + (float(shove.reach) + float(shove.size)) / maxf(float(threat.speed), 0.001) + Tuning.BOT_DEFLECT_EARLY
 		var threat_id: int = int(threat.id)
 		var deflect_gate: bool = bool(memory.get("deflect_gate", false))
 		if int(memory.get("deflect_threat", -1)) != threat_id:
@@ -136,7 +137,7 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 		var preserve: float = float(dash.preserve_momentum)
 		if preserve > 0.0:
 			dash_velocity = Vector3(player.velocity.x, 0.0, player.velocity.z) + dash_velocity * preserve
-		var endpoint: Vector3 = player.position + dash_velocity * float(dash.duration)
+		var endpoint: Vector3 = player.position + dash_velocity * float(dash.active)
 		if absf(endpoint.x) < safe_limit and absf(endpoint.z) < safe_limit:
 			cmd.moves = InputCmd.H_DASH
 			return

@@ -43,6 +43,8 @@ var _receiving_network_settings: bool = false
 var kit_entities: KitEntitiesView
 var selected_element: String = "earth"
 var _roster_rng := RandomNumberGenerator.new()
+var dummy_ids: Array[int] = []
+var _dummy_elapsed: Dictionary = {}
 
 func _ready() -> void:
 	_build_world()
@@ -64,6 +66,7 @@ func _ready() -> void:
 	tuning_panel.tuning_changed.connect(_on_tuning_changed)
 	tuning_panel.panel_visibility_changed.connect(func(_opened: bool) -> void: _sync_cursor())
 	gizmos = DevGizmos.new()
+	gizmos.trajectory_enabled = Tuning.DEV_TRAJECTORY_ENABLED
 	add_child(gizmos)
 	network = NetSession.new()
 	network.name = "Network"
@@ -97,6 +100,8 @@ func show_menu() -> void:
 	game_hud.reset_match()
 	bot_ids.clear()
 	bot_memory.clear()
+	dummy_ids.clear()
+	_dummy_elapsed.clear()
 	_world_time = 0.0
 	_clear_players()
 	_sync_cursor()
@@ -162,6 +167,8 @@ func start_match(ids: Array) -> void:
 	_match_ids = ids.duplicate()
 	bot_ids.clear()
 	bot_memory.clear()
+	dummy_ids.clear()
+	_dummy_elapsed.clear()
 	world = World.create(ids)
 	if capture_mode:
 		_roster_rng.seed = 0x5EED + int(ids.hash())
@@ -247,9 +254,26 @@ func _physics_process(_delta: float) -> void:
 			if world.players.has(local_id):
 				commands[local_id] = sample_input()
 			for player_id in bot_ids:
+				if dummy_ids.has(int(player_id)):
+					continue
 				var decision: Dictionary = BotSim.command(world, int(player_id), bot_memory.get(player_id, {}), Tuning.FIXED_DELTA)
 				commands[player_id] = decision.cmd
 				bot_memory[player_id] = decision.memory
+			for dummy_id in dummy_ids:
+				if not world.players.has(dummy_id) or int(world.players[dummy_id].stocks) <= 0:
+					continue
+				var elapsed: float = float(_dummy_elapsed.get(dummy_id, 0.0)) + Tuning.FIXED_DELTA
+				var commands_for_dummy := InputCmd.new(Vector2.ZERO, false, false, float(world.players[dummy_id].yaw), int(world.tick))
+				if elapsed + 0.0000001 >= Tuning.DEV_DUMMY_INTERVAL:
+					elapsed = 0.0
+					var origin: Vector3 = world.players[dummy_id].position
+					var target: Vector3 = world.players.get(local_id, {}).get("position", origin + Vector3.FORWARD)
+					var aim: Vector3 = target - origin
+					commands_for_dummy.yaw = atan2(-aim.x, -aim.z)
+					commands_for_dummy.pitch = atan2(aim.y, Vector2(aim.x, aim.z).length())
+					commands_for_dummy.moves = InputCmd.BASIC_SHOT
+				_dummy_elapsed[dummy_id] = elapsed
+				commands[dummy_id] = commands_for_dummy
 			recording.record(commands, _tuning_patch)
 			_tuning_patch.clear()
 			world = World.step(world, commands, Tuning.FIXED_DELTA)
@@ -320,7 +344,12 @@ func _process(delta: float) -> void:
 	# Presentation only: authoritative simulation and flow advance in physics.
 	presentation_time += delta
 	arena.animate(delta, presentation_time)
-	gizmos.render_frame(world)
+	var trajectory: Array = []
+	var trajectory_color := Color("#eeeeee")
+	if gizmos.trajectory_enabled and world.has("players") and world.players.has(local_id):
+		trajectory = _trajectory_preview()
+		trajectory_color = Kits.color(str(world.players[local_id].element))
+	gizmos.render_frame(world, trajectory, trajectory_color)
 	network_ui.render_frame()
 	if world.is_empty():
 		kit_entities.clear()
@@ -339,6 +368,30 @@ func _process(delta: float) -> void:
 	if not human.is_empty():
 		var velocity: Vector3 = human.velocity
 		synth.update_motion(Vector2(velocity.x, velocity.z).length(), human.on_ground, delta)
+
+func _trajectory_preview() -> Array:
+	# B previews a curve shot at current aim/strafe, with future actor commands idle.
+	if world.is_empty() or not world.players.has(local_id):
+		return []
+	var ticks: int = mini(ceili(Tuning.DEV_TRAJECTORY_SECONDS / Tuning.FIXED_DELTA), 128)
+	var samples: int = clampi(Tuning.DEV_TRAJECTORY_STEPS, 2, 128)
+	var stride: int = maxi(1, ceili(float(ticks) / float(samples - 1)))
+	var simulated: Dictionary = world.duplicate(true)
+	var points: Array = []
+	var shot_id: int = int(simulated.next_entity_id)
+	var direction: Vector3 = World.aim_direction(yaw, clampf(pitch, -PI * 0.5, PI * 0.5))
+	var strafe: float = Input.get_axis("move_left", "move_right")
+	ProjectileSim.spawn_projectile(simulated, local_id, "curve_shot", direction, strafe)
+	if not simulated.projectiles.has(shot_id):
+		return points
+	for tick in range(ticks):
+		if not simulated.projectiles.has(shot_id):
+			break
+		if tick % stride == 0 or tick == ticks - 1:
+			points.append(simulated.projectiles[shot_id].position)
+		simulated = World.step(simulated, {}, Tuning.FIXED_DELTA)
+	return points
+
 
 func _update_camera(delta: float) -> void:
 	if capture_mode:
@@ -652,6 +705,75 @@ func _capture_kit_scenario(scenario: String) -> Variant:
 	camera.look_at(Vector3(6.0, 1.0, 6.0))
 	game_hud.render_frame(world, flow, local_id, camera, 0.0)
 	return true
+func _capture_dev_scenario(scenario: String) -> Variant:
+	Input.action_release("move_left")
+	Input.action_release("move_right")
+	selected_element = "air" if scenario == "tuning_element" else "fire"
+	start_match([local_id])
+	flow.phase = "playing"
+	menu_overlay.hide()
+	var human: Dictionary = world.players[local_id]
+	human.position = Vector3(0.0, World.floor_height(Vector3(0.0, 0.0, 3.0)) + Tuning.BODY_HEIGHT * 0.5, 3.0)
+	human.yaw = 0.0
+	human.velocity = Vector3.ZERO
+	if scenario == "tuning_element":
+		for shot_tick in range(16):
+			_capture_sim_step({local_id: _capture_command(local_id, InputCmd.BASIC_SHOT, false, 0.0, 0.0)} if shot_tick == 0 else {})
+			if not world.projectiles.is_empty():
+				break
+		kit_entities.render_world(world)
+		tuning_panel.set_open(true)
+		tuning_panel._search.text = "air.curve_shot"
+		tuning_panel._filter("air.curve_shot")
+		for id in world.players:
+			player_views[id].render_state(world.players[id], 0.0, presentation_time)
+		camera.global_position = Vector3(3.0, 4.5, 12.0)
+		camera.look_at(Vector3(0.0, 1.0, 3.0))
+	elif scenario == "dummy":
+		var previous_dummy_interval: float = Tuning.DEV_DUMMY_INTERVAL
+		Tuning.DEV_DUMMY_INTERVAL = 0.125
+		_spawn_dummy()
+		var dummy_id: int = int(dummy_ids.back())
+		world.players[dummy_id].position = Vector3(0.0, World.floor_height(Vector3(0.0, 0.0, -2.5)) + Tuning.BODY_HEIGHT * 0.5, -2.5)
+		world.players[dummy_id].yaw = PI
+		var projectile_spawned: bool = false
+		for i in range(64):
+			var commands: Dictionary = {}
+			var elapsed: float = float(_dummy_elapsed[dummy_id]) + Tuning.FIXED_DELTA
+			var cmd := InputCmd.new(Vector2.ZERO, false, false, PI, int(world.tick))
+			if elapsed >= Tuning.DEV_DUMMY_INTERVAL:
+				elapsed = 0.0
+				cmd.moves = InputCmd.BASIC_SHOT
+			_dummy_elapsed[dummy_id] = elapsed
+			commands[dummy_id] = cmd
+			world = World.step(world, commands, Tuning.FIXED_DELTA)
+			for projectile in world.projectiles.values():
+				if int(projectile.owner) == dummy_id:
+					projectile_spawned = true
+					break
+			if projectile_spawned:
+				break
+		if not projectile_spawned:
+			Tuning.DEV_DUMMY_INTERVAL = previous_dummy_interval
+			return {"available": false, "reason": "World.step did not create a real dummy projectile for the capture."}
+		for i in range(4):
+			world = World.step(world, {}, Tuning.FIXED_DELTA)
+		Tuning.DEV_DUMMY_INTERVAL = previous_dummy_interval
+		for id in world.players:
+			player_views[id].render_state(world.players[id], 0.0, presentation_time)
+		kit_entities.render_world(world)
+		camera.global_position = Vector3(4.5, 4.0, 7.0)
+		camera.look_at(Vector3(0.0, 1.0, 0.0))
+	else:
+		Input.action_press("move_right")
+		yaw = 0.45
+		pitch = 0.15
+		human.yaw = yaw
+		gizmos.trajectory_enabled = true
+		camera.global_position = Vector3(0.0, 4.5, 10.0)
+		camera.look_at(Vector3(0.0, 1.0, 0.0))
+	game_hud.render_frame(world, flow, local_id, camera, 0.0)
+	return true
 
 func capture_scenario(scenario: String) -> Variant:
 	# Deterministic presentation staging; never used by a live match.
@@ -667,7 +789,8 @@ func capture_scenario(scenario: String) -> Variant:
 		return true
 	if scenario in ["projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect"]:
 		return _capture_kit_scenario(scenario)
-	start_offline(3 if scenario == "hud" else (0 if scenario == "character" else (1 if scenario == "impact" else 5)))
+	if scenario in ["tuning_element", "dummy", "trajectory"]:
+		return _capture_dev_scenario(scenario)
 	flow.phase = "playing"
 	menu_overlay.hide()
 	var placements: Array = [Vector3(-2, 0, 1), Vector3(0, 0, -1), Vector3(2, 0, 1), Vector3(0, 0, 3), Vector3(7, 0, -5), Vector3(-3, 0, -7), Vector3(11, 0, 7), Vector3(-11, 0, 5)]
@@ -735,6 +858,38 @@ func _input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
 		return
 	var key: int = event.physical_keycode
+	var keyboard_focus := get_viewport().gui_get_focus_owner()
+	if keyboard_focus is LineEdit or keyboard_focus is TextEdit or keyboard_focus is SpinBox:
+		if key in [KEY_C, KEY_V, KEY_B, KEY_M]:
+			return
+	if key in [KEY_C, KEY_V, KEY_B]:
+		var focus := get_viewport().gui_get_focus_owner()
+		if menu_overlay.visible or tuning_panel.is_open() or focus is LineEdit or focus is TextEdit or focus is SpinBox:
+			return
+		if key == KEY_B:
+			Tuning.DEV_TRAJECTORY_ENABLED = not Tuning.DEV_TRAJECTORY_ENABLED
+			gizmos.trajectory_enabled = Tuning.DEV_TRAJECTORY_ENABLED
+			get_viewport().set_input_as_handled()
+			return
+		if network.active or replaying or paused or not ["playing", "ringout"].has(str(flow.get("phase", ""))):
+			return
+		if key == KEY_C and world.players.has(local_id):
+			var index: int = Kits.ELEMENTS.find(str(world.players[local_id].element))
+			selected_element = Kits.ELEMENTS[(index + 1) % Kits.ELEMENTS.size()]
+			World.set_element(world, local_id, selected_element)
+			var old_view: Node = player_views[local_id]
+			remove_child(old_view)
+			old_view.queue_free()
+			player_views[local_id] = _build_player(local_id)
+			_begin_recording()
+			get_viewport().set_input_as_handled()
+		elif key == KEY_V:
+			if dummy_ids.is_empty():
+				_spawn_dummy()
+			else:
+				_remove_offline_bot(dummy_ids.back())
+			get_viewport().set_input_as_handled()
+		return
 	if key == KEY_F1:
 		if not replaying:
 			tuning_panel.toggle()
@@ -746,13 +901,65 @@ func _input(event: InputEvent) -> void:
 		Tuning.MUSIC_ENABLED = not Tuning.MUSIC_ENABLED
 		_on_tuning_changed("MUSIC_ENABLED", Tuning.MUSIC_ENABLED)
 
+func _spawn_dummy() -> void:
+	if network.active or world.players.size() >= 8:
+		return
+	var id: int = 2
+	while world.players.has(id):
+		id += 1
+	var ids: Array = world.players.keys()
+	ids.append(id)
+	world.players[id] = World.create(ids).players[id]
+	World.set_element(world, id, "earth")
+	var target: Vector3 = world.players.get(local_id, {}).get("position", Vector3.ZERO)
+	world.players[id].position = World._safe_spawn(target + Vector3(5.0, 0.0, 0.0))
+	world.players[id].spawn = world.players[id].position
+	world.players[id].yaw = atan2(-(target - world.players[id].position).x, -(target - world.players[id].position).z)
+	player_views[id] = _build_player(id)
+	bot_ids.append(id)
+	dummy_ids.append(id)
+	_dummy_elapsed[id] = 0.0
+	_match_ids.append(id)
+	_begin_recording()
+
+func _remove_offline_bot(id: int) -> void:
+	dummy_ids.erase(id)
+	_dummy_elapsed.erase(id)
+	bot_ids.erase(id)
+	_match_ids.erase(id)
+	bot_memory.erase(id)
+	world.players.erase(id)
+	for projectile_id in world.projectiles.keys():
+		if int(world.projectiles[projectile_id].owner) == id:
+			world.projectiles.erase(projectile_id)
+	for wall_id in world.walls.keys():
+		if int(world.walls[wall_id].owner) == id:
+			world.walls.erase(wall_id)
+	for player in world.players.values():
+		player.attack_hits.erase(id)
+		if int(player.chain_target) == id:
+			player.chain_target = -1
+			player.chain_hits = 0
+			player.chain_timer = 0.0
+	for wall in world.walls.values():
+		wall.hit_shoves.erase(id)
+	for projectile in world.projectiles.values():
+		projectile.hit_ids.erase(id)
+	if player_views.has(id):
+		player_views[id].queue_free()
+		player_views.erase(id)
+	world.events.clear()
+	_begin_recording()
 func _on_tuning_changed(name: String, value: Variant) -> void:
 	if network != null and network.active and network.hosting and not _receiving_network_settings:
 		network.push_tuning(name, value)
+	game_hud.invalidate_tuning()
 	if not replaying:
 		_tuning_patch[name] = value
 	if name == "HUD_DEBUG_ENABLED":
 		game_hud.debug_visible = value
+	elif name == "DEV_TRAJECTORY_ENABLED":
+		gizmos.trajectory_enabled = bool(value)
 	if name == "CAMERA_FAR":
 		camera.far = value
 	if name == "VIS_TAG_FONT_SIZE":
@@ -882,13 +1089,7 @@ func _run_dev_actions() -> void:
 			_match_ids.append(id)
 			_begin_recording()
 		elif key == KEY_F4 and not bot_ids.is_empty():
-			var id: int = int(bot_ids.pop_back())
-			world.players.erase(id)
-			bot_memory.erase(id)
-			_match_ids.erase(id)
-			player_views[id].queue_free()
-			player_views.erase(id)
-			_begin_recording()
+			_remove_offline_bot(int(bot_ids.back()))
 		elif key == KEY_F5:
 			Tuning.DEV_SLOWMO_ENABLED = not Tuning.DEV_SLOWMO_ENABLED
 		elif key == KEY_F6:
@@ -916,7 +1117,7 @@ func _run_dev_actions() -> void:
 func _can_edit_tuning(name: String) -> bool:
 	if network == null or not network.active or network.hosting:
 		return true
-	return name.begins_with("NET_") or name.begins_with("CAMERA_") or name.begins_with("VIS_") or name.begins_with("JUICE_") or name.begins_with("HUD_") or name.begins_with("AUDIO_") or name.begins_with("MUSIC_") or name.begins_with("SFX_") or name in ["MOUSE_SENSITIVITY", "PITCH_INITIAL", "DEV_HITBOX_ENABLED", "DEV_VELOCITY_ENABLED", "DEV_VELOCITY_SCALE", "DEV_GIZMO_SEGMENTS"]
+	return name.begins_with("NET_") or name.begins_with("CAMERA_") or name.begins_with("VIS_") or name.begins_with("JUICE_") or name.begins_with("HUD_") or name.begins_with("AUDIO_") or name.begins_with("MUSIC_") or name.begins_with("SFX_") or name in ["MOUSE_SENSITIVITY", "PITCH_INITIAL", "DEV_HITBOX_ENABLED", "DEV_VELOCITY_ENABLED", "DEV_VELOCITY_SCALE", "DEV_GIZMO_SEGMENTS", "DEV_TRAJECTORY_ENABLED", "DEV_TRAJECTORY_SECONDS", "DEV_TRAJECTORY_STEPS"]
 
 func _on_network_lobby() -> void:
 	if network.active and network.flow.get("phase", "lobby") == "lobby":

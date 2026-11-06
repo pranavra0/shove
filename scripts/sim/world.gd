@@ -69,15 +69,16 @@ static func step(world: Dictionary, commands: Dictionary, dt: float) -> Dictiona
 			player.chain_target = -1
 		player.dash_time = maxf(0.0, float(player.dash_time) - dt)
 		AbilitySim.before_move(result, int(id), cmd, dt, false, stunned)
+		var shove: Dictionary = Kits.move(str(player.element), "shove")
 		if cmd.shove and not stunned and float(player.cooldown) <= 0.0 and float(player.attack_time) <= 0.0:
-			player.attack_time = Tuning.SHOVE_WINDUP + Tuning.SHOVE_ACTIVE
-			player.cooldown = Tuning.SHOVE_COOLDOWN
+			player.attack_time = float(shove.windup) + float(shove.active)
+			player.cooldown = float(shove.cooldown)
 			player.attack_hits = []
 			player.attack_serial = int(player.attack_serial) + 1
 			result.events.append({"type": "shove", "player": id, "position": player.position})
 		var previous_attack: float = float(player.attack_time)
 		player.attack_time = maxf(0.0, previous_attack - dt)
-		active[id] = previous_attack > 0.0 and float(player.attack_time) < Tuning.SHOVE_ACTIVE
+		active[id] = previous_attack > 0.0 and float(player.attack_time) < float(shove.active)
 		var movement_cmd: InputCmd = InputCmd.new(cmd.move, cmd.jump and not stunned, false, cmd.yaw, result.tick)
 		_move_player(player, movement_cmd, stunned, dt, int(id), result.events, result.walls)
 	for id in ids:
@@ -94,28 +95,30 @@ static func step(world: Dictionary, commands: Dictionary, dt: float) -> Dictiona
 		if not active.get(attacker_id, false):
 			continue
 		var attacker: Dictionary = result.players[attacker_id]
+		var shove: Dictionary = Kits.move(str(attacker.element), "shove")
 		var forward: Vector3 = Vector3.FORWARD.rotated(Vector3.UP, attacker.yaw)
-		var centre: Vector3 = attacker.position + forward * Tuning.SHOVE_REACH
+		var centre: Vector3 = attacker.position + forward * float(shove.reach)
 		for victim_id in ids:
 			if victim_id == attacker_id or attacker.attack_hits.has(victim_id):
 				continue
 			var victim: Dictionary = result.players[victim_id]
 			if victim.stocks <= 0 or victim.invuln > 0.0:
 				continue
-			if centre.distance_squared_to(victim.position) <= Tuning.SHOVE_RADIUS * Tuning.SHOVE_RADIUS:
+			if centre.distance_squared_to(victim.position) <= float(shove.size) * float(shove.size):
 				attacker.attack_hits.append(victim_id)
 				var momentum: Vector3 = attacker.velocity
 				momentum.y = 0.0
-				hits.append({"attacker": attacker_id, "player": victim_id, "direction": forward, "momentum": momentum})
+				hits.append({"attacker": attacker_id, "player": victim_id, "direction": forward, "momentum": momentum, "data": shove})
 	for hit in hits:
 		var victim: Dictionary = result.players[hit.player]
-		victim.damage += Tuning.SHOVE_DAMAGE
-		var impulse: Vector3 = hit.direction.normalized() * (Tuning.BASE_KB + victim.damage * Tuning.KB_SCALE)
-		impulse += hit.momentum * Tuning.MOMENTUM_TRANSFER + Vector3.UP * Tuning.KB_UP
+		var shove: Dictionary = hit.data
+		victim.damage += float(shove.damage)
+		var impulse: Vector3 = hit.direction.normalized() * (float(shove.kb_base) + victim.damage * float(shove.kb_scale))
+		impulse += hit.momentum * float(shove.momentum) + Vector3.UP * float(shove.kb_up)
 		victim.velocity += impulse
 		victim.on_ground = false
-		victim.hitstun = Tuning.HITSTUN
-		result.events.append({"type": "hit", "player": hit.player, "attacker": hit.attacker, "position": victim.position, "strength": impulse.length()})
+		victim.hitstun = float(shove.hitstun)
+		result.events.append({"type": "hit", "player": hit.player, "attacker": hit.attacker, "position": victim.position, "strength": impulse.length(), "source": "shove"})
 	ProjectileSim.step(result, active, commands, dt)
 	for id in ids:
 		var player: Dictionary = result.players[id]
@@ -187,9 +190,10 @@ static func predict_player(world: Dictionary, id: int, cmd: InputCmd, dt: float)
 		player.chain_hits = 0
 		player.chain_target = -1
 	AbilitySim.before_move(isolated, id, cmd, dt, true, stunned)
+	var shove: Dictionary = Kits.move(str(player.element), "shove")
 	if cmd.shove and not stunned and float(player.cooldown) <= 0.0 and float(player.attack_time) <= 0.0:
-		player.attack_time = Tuning.SHOVE_WINDUP + Tuning.SHOVE_ACTIVE
-		player.cooldown = Tuning.SHOVE_COOLDOWN
+		player.attack_time = float(shove.windup) + float(shove.active)
+		player.cooldown = float(shove.cooldown)
 		player.attack_hits = []
 		player.attack_serial = int(player.attack_serial) + 1
 	player.dash_time = maxf(0.0, float(player.dash_time) - dt)

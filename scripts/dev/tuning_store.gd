@@ -34,6 +34,10 @@ static func bounds(name: String, value: Variant) -> Vector2:
 	var magnitude: float = absf(float(value))
 	var high: float = maxf(1.0, magnitude * 8.0)
 	var low: float = 0.0
+	if name == "DEV_TRAJECTORY_SECONDS":
+		return Vector2(1.0 / 64.0, 2.0)
+	if name == "DEV_TRAJECTORY_STEPS":
+		return Vector2(2.0, 128.0)
 	if name == "WALL_HORIZONTAL_THRESHOLD":
 		return Vector2(-1.0, 0.0)
 	if name == "NET_PORT":
@@ -74,6 +78,66 @@ static func bounds(name: String, value: Variant) -> Vector2:
 		low = 3.0
 	return Vector2(low, high)
 
+static func kit_bounds(element: String, slot: String, field: String) -> Vector2:
+	if not Kits.ELEMENTS.has(element) or not Kits.SLOTS.has(slot) or not Kits.move_fields(slot).has(field):
+		return Vector2(0.0, 0.0)
+	# Kit ranges describe the editor/preset domain, not the live scalar-derived
+	# move. A preset therefore remains valid after unrelated tuning changes.
+	if field in ["wall_horizontal_threshold", "pitch_threshold"]:
+		return Vector2(-1.0, 1.0)
+	if field == "wall_hp":
+		return Vector2(1.0, 10000.0)
+	if field in ["size", "reach", "wall_width", "wall_height", "wall_depth", "slam_radius"]:
+		return Vector2(0.0001, 1000.0)
+	if field == "duration":
+		return Vector2(0.0001, 60.0) if slot in ["basic_shot", "curve_shot", "quick_fire", "wall"] else Vector2(0.0, 60.0)
+	if field in ["cooldown", "windup", "active", "iframe_time", "hitstun", "chain_window", "chain_stun"]:
+		return Vector2(0.0, 60.0)
+	if field in ["damage", "kb_base", "kb_scale", "momentum", "speed", "kb_up", "gravity", "curve_rate", "curve_drift", "spike_damage_mult", "spike_kb_mult", "lob_damage_mult", "lob_kb_mult", "lob_speed_mult", "spike_dive_speed", "spike_pop_speed", "placement_distance", "recovery_up", "recovery_horizontal"]:
+		return Vector2(0.0, 1000.0)
+	if field in ["homing", "preserve_momentum"]:
+		return Vector2(0.0, 1.0)
+	return Vector2(0.0, 1000.0)
+
+static func _typed_kit_number(value: Variant) -> Variant:
+	if value is Dictionary:
+		if value.get("type") != "float":
+			return null
+		var hex: Variant = value.get("value")
+		if not hex is String or hex.length() != 16 or not hex.is_valid_hex_number(false):
+			return null
+		value = hex.hex_decode().decode_double(0)
+	return float(value) if _finite_number(value) else null
+
+static func _typed_kit_overrides(value: Variant) -> Variant:
+	if not value is Dictionary:
+		return null
+	var result: Dictionary = {}
+	for element in value:
+		if typeof(element) != TYPE_STRING or not Kits.ELEMENTS.has(element) or not value[element] is Dictionary:
+			return null
+		var slots: Dictionary = {}
+		for slot in value[element]:
+			if typeof(slot) != TYPE_STRING or not Kits.SLOTS.has(slot) or not value[element][slot] is Dictionary:
+				return null
+			var fields: Dictionary = {}
+			for field in value[element][slot]:
+				if typeof(field) != TYPE_STRING or not Kits.move_fields(slot).has(field):
+					return null
+				var decoded: Variant = _typed_kit_number(value[element][slot][field])
+				if decoded == null:
+					return null
+				var limits := kit_bounds(element, slot, field)
+				var number: float = float(decoded)
+				if number < limits.x or number > limits.y or (field == "wall_hp" and number != floorf(number)):
+					return null
+				fields[field] = number
+			if not fields.is_empty():
+				slots[slot] = fields
+		if not slots.is_empty():
+			result[element] = slots
+	return result
+
 static func encode(values: Dictionary) -> Dictionary:
 	var result: Dictionary = {}
 	for name in values:
@@ -92,6 +156,11 @@ static func _encode_value(value: Variant) -> Variant:
 		return {"type": "Vector2", "value": [value.x, value.y]}
 	if value is Vector3:
 		return {"type": "Vector3", "value": [value.x, value.y, value.z]}
+	if value is Dictionary:
+		var entries: Dictionary = {}
+		for key in value:
+			entries[key] = _encode_value(value[key])
+		return entries
 	if value is Array:
 		var items: Array = []
 		for item in value:
@@ -150,11 +219,15 @@ static func decode(values: Dictionary) -> Dictionary:
 		if not factory.has(name):
 			push_warning("Unknown tuning field: %s" % str(name))
 			return {}
-		var value: Variant = _typed_value(values[name], factory[name])
+		var value: Variant
+		if name == "KIT_OVERRIDES":
+			value = _typed_kit_overrides(values[name])
+		else:
+			value = _typed_value(values[name], factory[name])
 		if value == null:
 			push_warning("Invalid tuning type: %s" % name)
 			return {}
-		if value is float or value is int:
+		if name != "KIT_OVERRIDES" and (value is float or value is int):
 			var limits := bounds(name, factory[name])
 			if float(value) < limits.x or float(value) > limits.y:
 				push_warning("Unsafe tuning value: %s" % name)

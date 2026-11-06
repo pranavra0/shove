@@ -3,6 +3,8 @@
 
 Headless regression (one host and two clients):
     python3 tools/net_test.py --godot /path/to/godot
+Full-kit network regression (same real host/two-client, latency and loss fixture):
+    python3 tools/net_test.py --godot /path/to/godot --scenario=full-kit
 Two rendered peers, optional live viewport captures:
     python3 tools/net_test.py --godot /path/to/godot --gui --capture-dir /tmp/shove-net-captures
 
@@ -44,6 +46,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--result-dir", type=Path, help="empty artifact directory outside the repository (default: new /tmp directory)")
     parser.add_argument("--gui", action="store_true", help="two real rendered windows instead of three headless peers")
     parser.add_argument("--expected-clients", type=int, help="client process count (default: 2 headless, 1 GUI)")
+    parser.add_argument("--scenario", choices=("baseline", "full-kit"), default="baseline",
+                        help="full-kit scripts successful moves over real ENet before the natural match ends")
     parser.add_argument("--capture-dir", type=Path, help="save each rendered peer's live lobby/playing/KO/winner/rematch PNGs outside the repo")
     parser.add_argument("--hold-seconds", type=float, default=3.0, help="GUI lobby, winner and rematch review hold (default: 3 seconds)")
     args = parser.parse_args()
@@ -51,6 +55,8 @@ def arguments() -> argparse.Namespace:
         args.expected_clients = 1 if args.gui else 2
     if not 1 <= args.expected_clients <= 7:
         parser.error("--expected-clients must be between 1 and 7")
+    if args.scenario == "full-kit" and args.expected_clients != 2:
+        parser.error("--scenario=full-kit requires the real host plus two clients")
     if args.gui and args.expected_clients != 1:
         parser.error("--gui is the reusable two-window run; use --expected-clients=1")
     if args.capture_dir and not args.gui:
@@ -106,10 +112,10 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
     baseline = results[0].get("terminal", {})
     if not baseline or baseline.get("epoch") != 1:
         raise RunFailure(f"Host did not preserve the complete first match: {baseline}")
-    expected_players = args.expected_clients + 1
+    expected_players = args.expected_clients + 1 + (1 if args.scenario == "full-kit" else 0)
     stocks = baseline.get("stocks", {})
     if len(stocks) != expected_players:
-        raise RunFailure(f"Terminal stock table must contain {expected_players} real peers: {stocks}")
+        raise RunFailure(f"Terminal stock table must contain {expected_players} match participants: {stocks}")
     live = [int(player) for player, stock in stocks.items() if stock > 0]
     if len(live) != 1 or baseline.get("winner") != live[0]:
         raise RunFailure(f"Match must reach a natural, unambiguous winner: {baseline}")
@@ -129,10 +135,37 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
             raise RunFailure(f"Authoritative terminal mismatch for {name}: host={baseline}, peer={terminal}")
         if terminal.get("tick", -1) <= 0:
             raise RunFailure(f"{name} did not observe a naturally advanced World: {terminal}")
-        if result.get("latency_ms") != 100 or abs(result.get("packet_loss", 0) - 0.05) > 1e-6:
-            raise RunFailure(f"{name} did not run the required 100 ms / 5% loss fixture")
+        if result.get("latency_ms") != 100 or result.get("jitter_ms") != 10 or abs(result.get("packet_loss", 0) - 0.05) > 1e-6:
+            raise RunFailure(f"{name} did not run the required 100 ms / 10 ms jitter / 5% loss fixture")
         if result.get("commands", 0) <= 0 or result.get("moving_commands", 0) <= 0:
             raise RunFailure(f"{name} was not driven by actual moving BotSim inputs")
+        if args.scenario == "full-kit":
+            required = result.get("full_kit", {})
+            expected_slots = {"basic_shot", "curve_shot", "quick_fire", "shove", "high_jump", "recovery", "down_dash", "h_dash", "wall"}
+            if set(required.get("slots", {})) != expected_slots:
+                raise RunFailure(f"{name} lacks nine distinct authoritative activations: {required}")
+            if required.get("projectile_spawns", 0) < 3 or required.get("projectile_state", 0) < 3 or required.get("wall_spawns", 0) < 1 or required.get("wall_state", 0) < 1:
+                raise RunFailure(f"{name} lacks authoritative spawned projectile/wall state: {required}")
+            if required.get("slam_hits", 0) < 1 or required.get("shove_hits", 0) < 1 or required.get("deflects", 0) < 1:
+                raise RunFailure(f"{name} lacks authoritative slam/shove contact or projectile deflection: {required}")
+            if any(required.get(field, 0) < 1 for field in ("high_jump_up", "recovery_used", "down_dash_state", "h_dash_speed", "shove_cooldown")):
+                raise RunFailure(f"{name} lacks physical mobility/recovery/slam/shove activation evidence: {required}")
+            if not result.get("kit_patch_received"):
+                raise RunFailure(f"{name} did not receive the host-authoritative live KIT_OVERRIDES change")
+            reliable_limit = int(result.get("reliable_raw_limit", 0))
+            if reliable_limit <= 0 or result.get("legal_settings_bytes", 0) <= 0 or result["legal_settings_bytes"] > reliable_limit:
+                raise RunFailure(f"{name} legal settings exceed its reliable transport bound: {result.get('legal_settings_bytes')}/{reliable_limit}")
+            if peer["name"] == "server" and (result.get("full_start_payload_bytes", 0) <= 0 or result["full_start_payload_bytes"] > reliable_limit):
+                raise RunFailure(f"Host's maximally populated legal start payload exceeds reliable bound: {result.get('full_start_payload_bytes')}/{reliable_limit}")
+            if peer["name"] == "server":
+                if not result.get("replay_verified"):
+                    raise RunFailure("Host did not replay the live tuning-change tape to its exact final World")
+                if set(result.get("elements", [])) != {"earth", "water", "fire", "air"}:
+                    raise RunFailure(f"Full-kit fixture did not represent all four elements: {result.get('elements')}")
+        if result.get("replicated_worlds", 0) <= 0:
+            raise RunFailure(f"{name} did not receive complete element/cooldown/projectile/wall snapshots")
+        if args.scenario == "full-kit" and peer["role"] == "client" and result.get("interpolated_projectiles", 0) <= 0:
+            raise RunFailure(f"{name} did not demonstrate projectile interpolation between buffered endpoints")
         if result.get("world_updates", 0) <= 0 or result.get("ko_events", 0) <= 0:
             raise RunFailure(f"{name} did not observe real world updates and authoritative KO events")
         if peer["role"] == "client" and result.get("peak_snapshot_rate", 0) <= 0:
@@ -182,7 +215,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"Network artifacts: {result_dir}", flush=True)
     if args.capture_dir:
         print(f"Live viewport captures: {args.capture_dir}", flush=True)
-    print(f"Starting real ENet {'rendered two-window' if args.gui else 'headless'} match on UDP {port}; 100 ms latency, 5% loss", flush=True)
+    print(f"Starting real ENet {'rendered two-window' if args.gui else 'headless'} match on UDP {port}; 100 ms latency, 10 ms jitter, 5% loss", flush=True)
     peers: list[dict[str, Any]] = []
     handles: list[TextIO] = []
     deadline = time.monotonic() + args.timeout
@@ -198,6 +231,7 @@ def run(args: argparse.Namespace) -> int:
             command.append("--headless")
         command += ["--script", "res://tests/net_peer.gd", "--", f"--role={role}", f"--port={port}", f"--name={name}",
                     f"--result-dir={result_dir}", f"--expected-clients={args.expected_clients}", f"--timeout={args.timeout - 3}"]
+        command.append("--scenario=" + args.scenario)
         if args.gui:
             command += ["--gui", f"--hold-seconds={args.hold_seconds}"]
         if args.capture_dir:
@@ -246,7 +280,7 @@ def run(args: argparse.Namespace) -> int:
             handle.close()
     summary = {
         "ok": failure is None, "error": failure, "port": port, "gui": args.gui,
-        "latency_ms": 100, "packet_loss": 0.05, "results": results,
+        "latency_ms": 100, "jitter_ms": 10, "packet_loss": 0.05, "scenario": args.scenario, "results": results,
         "peers": [{"name": peer["name"], "exit_code": peer["process"].returncode,
                    "log": str(peer["log_path"]), "command": peer["command"]} for peer in peers],
     }
@@ -261,6 +295,17 @@ def run(args: argparse.Namespace) -> int:
     for result in results:
         print(f"  {result['name']}: snapshot_peak={result['peak_snapshot_rate']:.1f} Hz, "
               f"drops={result['dropped']}, KO_events={result['ko_events']}, rematch=epoch{result['rematch']['epoch']}/countdown")
+        if args.scenario == "full-kit":
+            kit = result.get("full_kit", {})
+            print(f"  {result['name']}: activations={kit.get('activated_moves', 0)} slots={sorted(kit.get('slots', {}))}, "
+                  f"projectile={kit.get('projectile_state', 0)}/{kit.get('projectile_spawns', 0)} wall={kit.get('wall_state', 0)}/{kit.get('wall_spawns', 0)}, "
+                  f"high_jump_up={kit.get('high_jump_up', 0)} recovery_used={kit.get('recovery_used', 0)} "
+                  f"down_dash={kit.get('down_dash_state', 0)} h_dash={kit.get('h_dash_speed', 0)} "
+                  f"slam_hits={kit.get('slam_hits', 0)} shove_activation={kit.get('shove_cooldown', 0)} shove_hits={kit.get('shove_hits', 0)}, "
+                  f"deflects={kit.get('deflects', 0)}, "
+                  f"replicated_worlds={result.get('replicated_worlds', 0)} interpolation_midpoints={result.get('interpolated_projectiles', 0)}, "
+                  f"legal_settings_bytes={result.get('legal_settings_bytes', 0)} start_payload_bytes={result.get('full_start_payload_bytes', 0)}, "
+                  f"replay_verified={result.get('replay_verified', False)}")
     print(f"Full logs and results: {result_dir}")
     return 0
 

@@ -5,6 +5,7 @@ signal tuning_changed(name: String, value: Variant)
 signal panel_visibility_changed(opened: bool)
 
 const Store = preload("res://scripts/dev/tuning_store.gd")
+const Kits = preload("res://scripts/sim/kits.gd")
 var _app: Node
 var _root: PanelContainer
 var _search: LineEdit
@@ -14,6 +15,9 @@ var _list: VBoxContainer
 var _rows: Dictionary = {}
 var _factory: Dictionary = Store.defaults()
 var _groups: Dictionary = {}
+var _element_groups: Dictionary = {}
+var _move_rows: Dictionary = {}
+var _move_headings: Dictionary = {}
 
 func setup(app: Node) -> void:
 	_app = app
@@ -78,7 +82,7 @@ func setup(app: Node) -> void:
 	body.add_child(presets)
 	var picker := OptionButton.new()
 	picker.add_item("Shipped presets…")
-	for preset in ["Source-tight", "Quake-fast", "Chaos"]:
+	for preset in ["Even", "Earth Heavy", "Air Chaos", "Source-tight", "Quake-fast", "Chaos"]:
 		picker.add_item(preset)
 	picker.item_selected.connect(func(index: int):
 		if index > 0:
@@ -137,9 +141,14 @@ func _rebuild() -> void:
 		child.queue_free()
 	_rows.clear()
 	_groups.clear()
+	_element_groups.clear()
+	_move_rows.clear()
+	_move_headings.clear()
 	var names := Store.fields()
 	names.sort()
 	for name in names:
+		if name == "KIT_OVERRIDES":
+			continue
 		var group: String = name.get_slice("_", 0)
 		if not _groups.has(group):
 			var heading := Label.new()
@@ -159,12 +168,108 @@ func _rebuild() -> void:
 		label.tooltip_text = name
 		row.add_child(label)
 		_editor(row, name, Tuning.get(name))
+	var move_heading := Label.new()
+	move_heading.text = "KIT MOVES"
+	move_heading.add_theme_font_size_override("font_size", 12)
+	move_heading.add_theme_color_override("font_color", Color(0.62, 0.64, 0.67))
+	_list.add_child(move_heading)
+	for element in Kits.ELEMENTS:
+		var section := VBoxContainer.new()
+		_list.add_child(section)
+		var toggle := Button.new()
+		toggle.text = element.capitalize() + " moves  ▸"
+		toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		section.add_child(toggle)
+		var content := VBoxContainer.new()
+		content.visible = false
+		section.add_child(content)
+		_element_groups[element] = {"button": toggle, "content": content, "section": section}
+		toggle.pressed.connect(func(): _toggle_element(element))
 	var computed := Label.new()
 	computed.text = "MAX_GROUND_ANGLE (computed, read-only): %.6f radians" % Tuning.MAX_GROUND_ANGLE
 	computed.add_theme_font_size_override("font_size", 12)
 	computed.add_theme_color_override("font_color", Color(0.58, 0.60, 0.63))
 	_list.add_child(computed)
 	_filter(_search.text)
+
+func _toggle_element(element: String) -> void:
+	var group: Dictionary = _element_groups[element]
+	var content: VBoxContainer = group.content
+	if content.get_child_count() == 0:
+		_build_element(element, content)
+	content.visible = not content.visible
+	group.button.text = element.capitalize() + (" moves  ▾" if content.visible else " moves  ▸")
+	_filter(_search.text)
+
+func _build_element(element: String, content: VBoxContainer) -> void:
+	for slot in Kits.SLOTS:
+		var heading := Label.new()
+		heading.text = slot
+		heading.add_theme_font_size_override("font_size", 12)
+		heading.add_theme_color_override("font_color", Color(0.68, 0.70, 0.73))
+		_move_headings["%s.%s" % [element, slot]] = heading
+		content.add_child(heading)
+		for field in Kits.move_fields(slot):
+			var key: String = "%s.%s.%s" % [element, slot, field]
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			content.add_child(row)
+			var label := Label.new()
+			label.text = key
+			label.custom_minimum_size.x = 300.0
+			label.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+			label.add_theme_font_size_override("font_size", 12)
+			label.add_theme_color_override("font_color", Color(0.78, 0.79, 0.81))
+			label.tooltip_text = key
+			row.add_child(label)
+			var move: Dictionary = Kits.move(element, slot)
+			var value: float = float(move.get(field, 0.0))
+			var limits: Vector2 = Store.kit_bounds(element, slot, field)
+			var integer: bool = field == "wall_hp"
+			_numeric(row, value, limits, integer, func(next: float): _change_kit(element, slot, field, int(next) if integer else next))
+			_move_rows[key] = row
+
+func _change_kit(element: String, slot: String, field: String, value: float) -> void:
+	var limits: Vector2 = Store.kit_bounds(element, slot, field)
+	if not is_finite(value) or value < limits.x or value > limits.y:
+		_status.text = "Rejected unsafe move value"
+		_rebuild()
+		return
+	var overrides: Dictionary = Tuning.KIT_OVERRIDES.duplicate(true)
+	var element_values: Dictionary = overrides.get(element, {}).duplicate(true)
+	var slot_values: Dictionary = element_values.get(slot, {}).duplicate(true)
+	if is_equal_approx(value, float(Kits.base_move(element, slot).get(field, 0.0))):
+		slot_values.erase(field)
+	else:
+		slot_values[field] = value
+	if slot_values.is_empty():
+		element_values.erase(slot)
+	else:
+		element_values[slot] = slot_values
+	if element_values.is_empty():
+		overrides.erase(element)
+	else:
+		overrides[element] = element_values
+	_change("KIT_OVERRIDES", overrides)
+	_refresh_move_rows()
+
+func _refresh_move_rows() -> void:
+	for key in _move_rows:
+		var parts: PackedStringArray = key.split(".")
+		var element: String = parts[0]
+		var slot: String = parts[1]
+		var field: String = parts[2]
+		var current: float = float(Kits.move(element, slot).get(field, 0.0))
+		var limits: Vector2 = Store.kit_bounds(element, slot, field)
+		var row: HBoxContainer = _move_rows[key]
+		var slider: HSlider = row.get_child(1)
+		var spin: SpinBox = row.get_child(2)
+		slider.min_value = limits.x
+		slider.max_value = limits.y
+		spin.min_value = limits.x
+		spin.max_value = limits.y
+		spin.set_value_no_signal(current)
+		slider.set_value_no_signal(current)
 
 func _editor(row: HBoxContainer, name: String, value: Variant) -> void:
 	if value is bool:
@@ -246,6 +351,7 @@ func _change(name: String, value: Variant) -> void:
 	Tuning.set(name, decoded[name])
 	tuning_changed.emit(name, decoded[name])
 	_status.text = "Changed " + name
+	_refresh_move_rows()
 
 func _apply_values(values: Dictionary) -> void:
 	var valid := Store.decode(Store.encode(values))
@@ -263,6 +369,7 @@ func _apply_values(values: Dictionary) -> void:
 			tuning_changed.emit(name, Tuning.get(name))
 	_rebuild()
 	_status.text = "Applied %d fields." % valid.size()
+	_refresh_move_rows()
 
 func _filter(query: String) -> void:
 	var groups: Dictionary = {}
@@ -273,7 +380,37 @@ func _filter(query: String) -> void:
 			groups[name.get_slice("_", 0)] = true
 	for group in _groups:
 		_groups[group].visible = groups.has(group)
-
+	for element in _element_groups:
+		var section: VBoxContainer = _element_groups[element].section
+		var matching: bool = query.is_empty() or query.to_lower() in element.to_lower()
+		if not matching:
+			for slot in Kits.SLOTS:
+				for field in Kits.move_fields(slot):
+					if query.to_lower() in ("%s.%s.%s" % [element, slot, field]).to_lower():
+						matching = true
+						break
+				if matching:
+					break
+		section.visible = matching
+		if not query.is_empty() and matching:
+			var content: VBoxContainer = _element_groups[element].content
+			if content.get_child_count() == 0:
+				_build_element(element, content)
+			content.visible = true
+	for key in _move_rows:
+		_move_rows[key].visible = query.is_empty() or query.to_lower() in key.to_lower()
+	for element in Kits.ELEMENTS:
+		for slot in Kits.SLOTS:
+			var heading_key: String = "%s.%s" % [element, slot]
+			if not _move_headings.has(heading_key):
+				continue
+			var visible: bool = query.is_empty()
+			for field in Kits.move_fields(slot):
+				var key: String = "%s.%s.%s" % [element, slot, field]
+				if query.to_lower() in key.to_lower():
+					visible = true
+					break
+			_move_headings[heading_key].visible = visible
 func _user_path() -> String:
 	var filename := _filename.text.strip_edges().get_file()
 	if filename.is_empty():

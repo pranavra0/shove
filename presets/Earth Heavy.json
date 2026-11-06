@@ -1,0 +1,9 @@
+{
+  "KIT_OVERRIDES": {
+    "earth": {
+      "shove": {"damage": 22.0, "kb_base": 10.0, "kb_scale": 0.19, "cooldown": 0.75},
+      "basic_shot": {"damage": 12.0, "kb_base": 7.0, "size": 0.32},
+      "wall": {"wall_hp": 12.0, "wall_width": 5.0, "wall_height": 5.0, "duration": 16.0}
+    }
+  }
+}

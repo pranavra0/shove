@@ -33,6 +33,9 @@ Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practi
 | F6 / F7 / F8 | Hitboxes / velocity vectors / debug HUD |
 | F9 / F10 | Add 100% damage / teleport to center (offline) |
 | F11 / F12 | Save replay / replay it after leaving an online session |
+| C | Cycle your kit offline (starts a new replay segment) |
+| V | Toggle a timed projectile-firing dummy offline |
+| B | Toggle the local curve-shot trajectory preview (online viewing allowed) |
 | M | Toggle music during gameplay |
 The F1–F12, M and Escape development/menu controls are preserved.
 Four kits define distinct combat styles:
@@ -47,7 +50,7 @@ The element is selected in offline setup or the online profile, and is part of s
 Bots choose from their assigned kit: they lead shots from the current target's motion, route curve shots around an obstructing wall, and can answer incoming threats with a probability-gated shove deflection or a wall. Edge avoidance and offstage recovery steer them toward safety; reaction delay, bhop skill and `BOT_DEFLECT_SKILL` tune aspects of their behavior. Offline match start and F3 bot-add assign an element from the dedicated roster RNG before replay recording begins; capture mode seeds that RNG from the participant IDs for reproducible assignment, and rematches retain the roster's elements.
 Each kit provides nine moves: basic shot, curve shot, quick fire, shove, high jump, down dash/slam, wall, horizontal dash and recovery. Basic shot, quick fire and shove are held controls; curve shot activates on release, while E, Ctrl, R and Shift activate on press. Releasing and repressing Space in air can request a recovery. Move requests are prioritized, cooldown-gated, and use the selected kit's move data. Aim pitch distinguishes curve-shot behavior: aiming down produces a spike and aiming up a lob. Walls are placed horizontally or vertically according to aim, and projectiles can be deflected by shove; deflection transfers ownership and increases speed/damage up to configured caps.
 
-Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. Full per-move/per-element editor exposure, associated dev tools and scripted all-moves network proof remain M5 work; the bot-driven match/rematch is not proof of network use of every move.
+Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. M5 adds per-move/per-element editor exposure and offline dev tools; the full-kit network fixture covers all four elements and all nine move slots, but not all 36 element/slot combinations.
 
 The portable default renderer is Compatibility/OpenGL. The default white-model presentation uses flat outlined primitives, a subtle world-space grid, hard directional shadows and a two-tone horizon. Decorative particles are disabled; gameplay hitstop, small shake and speed FOV remain toggleable in F1.
 
@@ -76,6 +79,16 @@ godot --headless --path . --script tests/scene_smoke.gd
 python3 tools/net_test.py --godot godot
 ```
 
+M5 integration checks extend the standard gates:
+
+```sh
+godot --audio-driver Dummy --path . --script tests/kit_tuning_scene_smoke.gd
+godot --audio-driver Dummy --path . --script tests/kit_dev_smoke.gd
+python3 tools/net_test.py --godot godot --scenario=full-kit
+```
+
+The first two drive the actual scene. `full-kit` runs a real host and two clients under simulated latency/jitter/loss, checks successful move outcomes and client interpolation, and verifies host replay after a live tuning patch.
+
 The runner imports script classes, runs every `tests/*_test.gd`, and fails on script errors as well as process failures. Scene smoke drives actual menu/setup/countdown/bot movement/KO/winner/rematch behavior. Simulation runs at a fixed 64 Hz; render callbacks only animate presentation.
 
 The network regression launches an actual ENet server and two headless clients with BotSim inputs, **100 ms one-way simulated latency, 10 ms jitter and 5% packet loss**. A compact one-stock arena fixture runs to a natural winner; all peers must agree on terminal stocks/winner and observe a fresh rematch countdown. Logs/results are written to a printed temporary directory outside the repository.
@@ -95,7 +108,7 @@ The rendered kit/input/replay smoke drives the actual main scene and requires a 
 godot --audio-driver Dummy --path . --script tests/kit_scene_smoke.gd
 ```
 
-The Dummy audio driver avoids requiring audible output. The smoke exercises all nine actions, camera pitch, projectile/wall creation and replay; it is not evidence of full-kit network action coverage.
+The Dummy audio driver avoids requiring audible output. The smoke exercises all nine actions, camera pitch, projectile/wall creation and replay; it does not exercise online network play.
 
 
 ## Deterministic screenshots
@@ -111,18 +124,19 @@ Scenarios: `menu`, `arena`, `bhop`, `impact`, `ko`, `hud`, `tuning`, `debug`, `c
 
 ## Live tuning and replay
 
-Press **F1** or choose **Tuning** from the menu. Search by field name; fields are grouped by prefix. Sliders/number inputs, toggles, color pickers, vector components and palette editors apply instantly. The mouse is released while the panel is open; opponents keep playing.
+Press **F1** or choose **Tuning** from the menu. Search fields by name; scalar settings are grouped by prefix. Numeric controls, toggles, colors, vectors and palettes apply immediately. The **KIT MOVES** sections are lazy-built per element, then searchable by element, move and field. They expose numeric move overrides through sparse `KIT_OVERRIDES` data (element → move → field): absent fields continue to derive from the shared scalar and per-element base values, while explicit overrides take precedence. Fields are checked and persisted by the existing typed preset/replay pipeline. The mouse is released while the panel is open; opponents keep playing.
 
 - **Save / Load**: named JSON files under `user://presets/`.
-- **Shipped presets**: **Source-tight**, **Quake-fast**, **Chaos**. Selecting one resets unspecified fields to factory defaults, then applies its overrides.
-- **Reset defaults** restores the factory script values.
-- **Copy diff** prints and copies changed `var NAME = value` declarations for replacing fields in `scripts/tuning.gd`.
-- Tick rate and derived conversion/angle fields are read-only. Structural arena/audio changes rebuild the affected presentation; animation/feel values update directly.
-- Online clients can edit local camera/audio/visual/network controls; simulation settings belong to the host. Host changes are transmitted authoritatively. World-mutation dev hotkeys remain offline-only, except host F2/rematch.
+- **Shipped presets**: **Even** sets each kit's basic-shot damage to 10, base knockback to 3, knockback scale to 0.12 and speed to 18; it does not equalize other moves. **Earth Heavy** sets Earth basic-shot base knockback to 7, wall HP to 12, width/height to 5 and duration to 16; its shove uses damage 22, base knockback 10, scale 0.19 and cooldown 0.75. **Air Chaos** sets Air curve-shot speed 23, drift 0.28, homing 0.3 and damage 9; dash active time 0.3/invulnerability 0.12; recovery speeds 17 up/13 horizontal. **Source-tight**, **Quake-fast** and **Chaos** remain available. Selecting any preset resets unspecified fields to factory defaults, then applies its overrides.
+- **Reset defaults** restores factory script values; **Copy diff** prints and copies changed scalar `var NAME = value` declarations for `scripts/tuning.gd`.
+- Fixed tick rate and derived/conversion fields remain read-only. `active` controls a move's cast/lock window, not physical dash duration; physical dash duration is not an editable field. Inert fields such as `cost`, recovery speed, and basic/quick-shot gravity are excluded from per-move editing.
+- Online clients can edit local camera/audio/visual/network controls; simulation settings belong to the host and host changes are transmitted authoritatively. World-mutation controls remain offline-only, except host F2/rematch.
 
 Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. Replay format v2 is a clean break and rejects v1 files. After leaving an online session, F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams. Determinism is promised for the same build.
 
-Dev mutations (spawn/remove bot, damage, teleport) and server-observed disconnections start a new recording segment at the changed World. Slow motion and hitstop affect scheduling, not the fixed simulation timestep. Replay reproduces simulation state, not online lobby names/colors.
+- **C** cycles your kit offline and starts a new replay segment. **V** toggles an offline timed projectile-firing dummy; its shots use actual simulation and can contact walls. **B** toggles the neutral-gray curve-shot trajectory preview, also viewable online: it uses current aim and actual strafe, previews a fixed-64-Hz isolated simulation for at most 128 ticks (two seconds by default), and samples at most 128 points. The simulated actor's future commands are idle; preview does not mutate the live World.
+- Avatar shove poses track move windup/active time, and HUD cooldown totals are invalidated when tuning changes.
+Dev mutations (spawn/remove bot or dummy, damage, teleport, cycle kit) and server-observed disconnections begin a new recording segment at the changed World. Slow motion and hitstop affect scheduling, not the fixed simulation timestep. Replay reproduces simulation state, not online lobby names/colors.
 
 
 ## Architecture
@@ -140,6 +154,8 @@ Dev mutations (spawn/remove bot, damage, teleport) and server-observed disconnec
 - Local prediction intentionally excludes remote-player body collision and combat. The server resolves these and reconciles the client; crowded/laggy brawls remain a playtesting target.
 - Internet/NAT behavior and eight separate human clients have not been exercised.
 - M4 bot acceptance passed after the F3 RNG repair: all 13 headless suites, scene smoke, F3 input/dev-action smoke, natural-combat bot smoke, roster/capture/rematch lifecycle and an impaired three-peer ENet match/rematch. The network run exercises match flow, not every move. Bot combat, roster and tuning-panel runs emitted ObjectDB shutdown warnings with variable instance counts despite no bot runtime errors.
+- M5 acceptance passed: all 14 headless suites, offline scene, rendered nine-action input, F1 tuning/preset scene (per-move value changes real physics, JSON save/load/reset, client edit guard), dev scene, three actual-World shipped-preset checks and baseline network match/rematch passed. Final rendered UI exited cleanly after scene-tree-owned shutdown.
+- The impaired three-peer full-kit ENet scenario used 100 ms one-way latency, 10 ms jitter and 5% loss; it represented all four elements and exercised all nine move slots, with physical outcomes, client projectile interpolation, host tuning propagation and exact replay verification after a live patch. Payloads measured 81,396 bytes for settings and 85,152 for full start, below the 131,072-byte bound; all three M5 captures were inspected and accepted. This is coverage of all nine slots plus all four elements, not all 36 element/slot combinations.
 - Audio samples, loop/mute behavior and playback state were verified. Audible output could not be auditioned here: the WSL environment lacked `libpulse.so.0` and an ALSA device, so Godot fell back to Dummy audio. Use a host with a working audio driver; on Ubuntu/WSLg, check `libpulse0` and the PulseAudio/WSLg connection. `--audio-driver Dummy` is appropriate for automated runs, not audible play.
 - M6's three-lane control-point mode remains unimplemented. Some Godot 4.7.2 Dummy-audio and throwaway smoke exits report WAV/playback/ObjectDB resource warnings despite explicit player cleanup; test runners reject script/runtime errors, and these shutdown warnings are documented separately.
 - Replay determinism is within the same build; cross-version/platform floating-point identity is not promised.

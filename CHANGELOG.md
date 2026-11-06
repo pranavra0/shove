@@ -1,18 +1,27 @@
 # Changelog
 
+## v0.3 M5 — Per-move tuning and developer tools
+
+- Added sparse element → move → numeric-field `KIT_OVERRIDES` with scalar/per-kit base precedence, typed preset/replay/host settings persistence, and searchable lazy-built per-element/per-move F1 sections. The editor exposes active simulation fields while omitting inert values; `active` is cast-lock time, not physical dash duration.
+- Added **Even** (basic-shot values only), **Earth Heavy** and **Air Chaos** presets while retaining Source-tight, Quake-fast and Chaos. Verified all three against actual World effects after preset load, not JSON alone.
+- Added offline C kit cycling with a new replay segment, V's timed projectile-firing dummy, and B's view-only fixed-tick curve-shot preview from current aim/strafe (also viewable online). Verified dummy hits/wall blocks, cleanup/replay behavior, preview path, HUD cooldown invalidation and active/windup shove pose.
+- Verified all 14 headless suites, offline scene smoke, rendered nine-action input/replay smoke, F1 tuning/persistence/client-edit guard smoke, dev smoke, three preset World checks, and a clean rendered UI smoke. Inspected and accepted `docs/shots/m5/tuning_element.png`, `dummy.png` and `trajectory.png`.
+- The impaired three-peer full-kit ENet run used 100 ms one-way latency, 10 ms jitter and 5% loss; it represented all four elements and exercised all nine move slots with physical outcomes. Both clients passed projectile interpolation checks, and the host replay matched exactly after live tuning. Settings/full-start payloads measured 81,396/85,152 bytes within the 131,072-byte bound. Coverage represents all nine slots plus all four elements, not every element/slot combination.
+- M6's three-lane control-point mode remains unimplemented.
+
 ## v0.3 M4 — Kit-aware bots
 
 - Updated deterministic caller-owned BotSim behavior to lead target movement, route curve shots around obstructing walls, defend against projectiles with skill-gated shove deflection or walls, slam grounded opponents, and recover/steer safely near edges using shared Source movement.
 - Randomized bot kit assignments for offline match start, offline F3 additions, and host-filled online rosters before recording; capture mode seeds the offline roster RNG from participant IDs, and rematches retain assigned elements. The F3 input/dev-action smoke passed, confirming the new element in the initial tape while preserving the selected human element.
-- After the F3 RNG callsite repair, all 13 headless suites passed (exit 0). Offline scene smoke, natural bot combat smoke (32 frames, nine move activation events, eight projectiles, one hit and one wall block, no runtime errors), roster/capture/rematch lifecycle and impaired three-peer ENet match/rematch also passed. No scripted all-moves network proof is claimed. One ObjectDB shutdown warning reported six instances in bot combat and seven in the roster throwaway run.
-- M5 still owns full per-move/per-element tuning exposure and complete network move proof; M6 remains unimplemented.
+- After the F3 RNG callsite repair, all 13 headless suites passed (exit 0). Offline scene smoke, natural bot combat smoke (32 frames, nine move activation events, eight projectiles, one hit and one wall block, no runtime errors), roster/capture/rematch lifecycle and impaired three-peer ENet match/rematch also passed. M4's network run covered match flow only; full-kit move acceptance was added and verified in M5. One ObjectDB shutdown warning reported six instances in bot combat and seven in the roster throwaway run.
+- M5 subsequently completed per-move/per-element tuning, developer tools and full-kit network acceptance; see the M5 entry above. M6 remains unimplemented.
 
 ## v0.3 M3 — Kits, abilities and projectiles
 
 - Added four selectable elemental kits with nine move slots each, kit-scaled movement/recovery, held/edge input handling, pitch-driven curve-shot spike/lob behavior, and horizontal/vertical walls. Projectile simulation covers kit-specific data, shove deflection, and wall/projectile contacts; World remains the pure authoritative simulation.
 - Added replay format v2 for kit/input/entity state and extended prediction/interpolation to snapshots containing projectiles and walls. Local prediction remains limited to the local player; authoritative projectiles and walls are not locally predicted.
 - Verified all 12 headless suites, actual offline scene smoke, and rendered `tests/kit_scene_smoke.gd` covering nine actions, pitch, entities and replay. A real ENet host with two clients completed a bot-driven natural match and rematch under simulated latency/jitter/loss; this is not full-kit network action proof. Captured M3 presentation evidence is in `docs/shots/m3/`.
-- M5 remains responsible for complete per-move/per-element editor tuning, corresponding dev tooling/network acceptance, and full-move network proof. No claim is made that every kit action has been exercised over the network.
+- The M5 follow-on completed per-move/per-element editing, dev tooling and full-kit network acceptance; see the M5 entry above. The M3 network regression at that milestone covered match flow only.
 
 ## v0.3 M2 — Minimal HUD and menus
 

@@ -205,7 +205,8 @@ static func step(world: Dictionary, active_shoves: Dictionary, commands: Diction
 			if not bool(active_shoves[attacker_id]) or not world.players.has(int(attacker_id)):
 				continue
 			var attacker: Dictionary = world.players[int(attacker_id)]
-			if not _in_shove(attacker, wall.position, float(Tuning.SHOVE_RADIUS) + maxf(wall.size.x, wall.size.z) * 0.5):
+			var shove: Dictionary = Kits.move(str(attacker.element), "shove")
+			if not _in_shove(attacker, wall.position, float(shove.size) + maxf(wall.size.x, wall.size.z) * 0.5, float(shove.reach)):
 				continue
 			var serial: int = int(attacker.attack_serial)
 			if int(wall.hit_shoves.get(int(attacker_id), -1)) == serial:
@@ -223,7 +224,9 @@ static func _deflector(world: Dictionary, projectile: Dictionary, active: Dictio
 		if not bool(active[id]) or int(id) == int(projectile.owner) or not world.players.has(int(id)) or not commands.has(int(id)):
 			continue
 		var player: Dictionary = world.players[int(id)]
-		if _in_shove(player, projectile.position, float(Tuning.SHOVE_RADIUS) + float(projectile.size)):
+		var shove: Dictionary = Kits.move(str(player.element), "shove")
+		if _in_shove(player, projectile.position, float(shove.size) + float(projectile.size), float(shove.reach)):
+			return int(id)
 			return int(id)
 	return -1
 
@@ -231,9 +234,9 @@ static func _deflect(projectile: Dictionary, world: Dictionary, owner: int, comm
 	var old_speed: float = projectile.velocity.length()
 	var move_data: Dictionary = Kits.move(str(world.players[owner].element), "shove")
 	var direction: Vector3 = World.aim_direction(command.yaw, command.pitch).normalized()
-	var new_speed: float = minf(old_speed * float(move_data.deflect_speed_gain), minf(float(move_data.max_speed), float(Tuning.DEFLECT_SPEED_CAP)))
+	var new_speed: float = minf(old_speed * float(move_data.deflect_speed_gain), float(move_data.max_speed))
 	projectile.velocity = direction * new_speed
-	projectile.damage = minf(float(projectile.damage) * float(move_data.deflect_damage_gain), minf(float(move_data.max_damage), float(Tuning.DEFLECT_DAMAGE_CAP)))
+	projectile.damage = minf(float(projectile.damage) * float(move_data.deflect_damage_gain), float(move_data.max_damage))
 	projectile.owner = owner
 	projectile.deflections = int(projectile.deflections) + 1
 	projectile.momentum = Vector3(world.players[owner].velocity.x, 0.0, world.players[owner].velocity.z)
@@ -258,9 +261,9 @@ static func _home(world: Dictionary, projectile: Dictionary, velocity: Vector3, 
 	var speed: float = velocity.length()
 	return velocity.normalized().slerp(target, clampf(float(projectile.homing) * dt, 0.0, 1.0)).normalized() * speed
 
-static func _in_shove(player: Dictionary, point: Vector3, radius: float) -> bool:
+static func _in_shove(player: Dictionary, point: Vector3, radius: float, reach: float) -> bool:
 	var forward: Vector3 = Vector3.FORWARD.rotated(Vector3.UP, float(player.yaw))
-	var centre: Vector3 = player.position + forward * float(Tuning.SHOVE_REACH)
+	var centre: Vector3 = player.position + forward * reach
 	var offset: Vector3 = point - centre
 	return offset.length_squared() <= radius * radius
 

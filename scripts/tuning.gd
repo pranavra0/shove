@@ -53,7 +53,13 @@ var MOMENTUM_TRANSFER: float = 0.85
 var KB_UP: float = 5.0
 var HITSTUN: float = 0.3
 var HITSTUN_CONTROL: float = 0.15
-# Per-element movement/combat scalars; shove remains entirely shared.
+# Sparse element -> move slot -> numeric field overrides. Empty preserves legacy defaults.
+var KIT_OVERRIDES: Dictionary = {}
+var DEV_DUMMY_INTERVAL: float = 1.0
+var DEV_TRAJECTORY_ENABLED: bool = false
+var DEV_TRAJECTORY_SECONDS: float = 2.0
+var DEV_TRAJECTORY_STEPS: int = 64
+# Per-element movement/combat scalars provide base values for the move tables.
 var EARTH_GROUND_SPEED: float = 0.72
 var EARTH_AIR_ACCEL: float = 0.78
 var EARTH_JUMP: float = 1.10

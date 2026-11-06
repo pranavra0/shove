@@ -1,12 +1,26 @@
 extends SceneTree
 
+var Kits: Script
+var Store: Script
+
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	await process_frame
+	var tune: Node = root.get_node_or_null("Tuning")
+	if tune == null:
+		push_error("Tuning autoload must be available before the panel test")
+		quit(1)
+		return
+	Kits = load("res://scripts/sim/kits.gd")
+	Store = load("res://scripts/dev/tuning_store.gd")
 	var scene: PackedScene = load("res://scenes/main.tscn")
 	var sim: GDScript = load("res://scripts/sim/world.gd")
-	var tune: Node = root.get_node("Tuning")
+	if Kits == null or Store == null or scene == null or sim == null:
+		push_error("Panel test scripts and scene must load")
+		quit(1)
+		return
 	var app = scene.instantiate()
 	root.add_child(app)
 	current_scene = app
@@ -31,6 +45,26 @@ func _run() -> void:
 	spin.value = gravity * 0.5
 	var changed_fall: Dictionary = sim.step(state, {}, tune.FIXED_DELTA)
 	assert(is_equal_approx(changed_fall.players[1].velocity.y, original_fall.players[1].velocity.y * 0.5), "Editing a live numeric control must change the next sim step")
+	panel._search.text = "earth.basic_shot.damage"
+	panel._search.text_changed.emit(panel._search.text)
+	assert(panel._element_groups.earth.section.visible and panel._move_rows.has("earth.basic_shot.damage"), "Move parameters must be searchable by element, slot, and field")
+	var kit_row: HBoxContainer = panel._move_rows["earth.basic_shot.damage"]
+	var base_damage: float = float(Kits.move("earth", "basic_shot").damage)
+	var kit_spin: SpinBox = kit_row.get_child(2)
+	kit_spin.value = base_damage * 1.25
+	assert(is_equal_approx(float(Kits.move("earth", "basic_shot").damage), base_damage * 1.25), "Editing a per-move control must update effective move behavior")
+	assert(is_equal_approx(float(Kits.base_move("earth", "basic_shot").damage), base_damage), "Sparse override must preserve legacy base move")
+	var shove_row: HBoxContainer = panel._move_rows["earth.shove.damage"]
+	var sparse_before_scalar: Dictionary = tune.KIT_OVERRIDES.duplicate(true)
+	var scalar_shove: float = tune.SHOVE_DAMAGE
+	panel._change("SHOVE_DAMAGE", scalar_shove * 1.1)
+	assert(is_equal_approx(float(shove_row.get_child(2).value), scalar_shove * 1.1), "Changing a base scalar must refresh visible derived move values")
+	assert(tune.KIT_OVERRIDES == sparse_before_scalar, "Changing a base scalar must not create or alter a sparse move override")
+	panel._change("SHOVE_DAMAGE", scalar_shove)
+	panel._apply_values(Store.defaults())
+	assert(tune.KIT_OVERRIDES.is_empty(), "Reset defaults must clear move overrides")
+	panel._search.text = ""
+	panel._search.text_changed.emit(panel._search.text)
 	for tick in range(50):
 		app._physics_process(tune.FIXED_DELTA)
 	panel._load("res://presets/Chaos.json")

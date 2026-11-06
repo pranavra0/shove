@@ -13,8 +13,10 @@ func _ready() -> void:
 	material_override = material
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-func render_frame(world: Dictionary) -> void:
-	visible = (Tuning.DEV_HITBOX_ENABLED or Tuning.DEV_VELOCITY_ENABLED) and not world.is_empty()
+var trajectory_enabled: bool = false
+
+func render_frame(world: Dictionary, preview: Array = [], preview_color: Color = Color("#eeeeee")) -> void:
+	visible = (Tuning.DEV_HITBOX_ENABLED or Tuning.DEV_VELOCITY_ENABLED or (trajectory_enabled and not preview.is_empty())) and not world.is_empty()
 	if not visible:
 		return
 	_lines.clear_surfaces()
@@ -26,14 +28,15 @@ func render_frame(world: Dictionary) -> void:
 		if Tuning.DEV_VELOCITY_ENABLED:
 			_line(at, at + player.velocity * Tuning.DEV_VELOCITY_SCALE, Color("ffe28a"))
 		if Tuning.DEV_HITBOX_ENABLED:
-			var center: Vector3 = at + Vector3.FORWARD.rotated(Vector3.UP, player.yaw) * Tuning.SHOVE_REACH
+			var data: Dictionary = Kits.move(str(player.element), "shove")
+			var center: Vector3 = at + Vector3.FORWARD.rotated(Vector3.UP, player.yaw) * float(data.reach)
 			var color := Color("ff7865") if player.attack_time > 0.0 else Color("50e3ed")
 			for axis in range(3):
 				for segment in range(Tuning.DEV_GIZMO_SEGMENTS):
 					var a: float = TAU * segment / Tuning.DEV_GIZMO_SEGMENTS
 					var b: float = TAU * (segment + 1) / Tuning.DEV_GIZMO_SEGMENTS
-					var first := Vector3(cos(a), sin(a), 0) * Tuning.SHOVE_RADIUS
-					var second := Vector3(cos(b), sin(b), 0) * Tuning.SHOVE_RADIUS
+					var first := Vector3(cos(a), sin(a), 0) * float(data.size)
+					var second := Vector3(cos(b), sin(b), 0) * float(data.size)
 					if axis == 1:
 						first = Vector3(first.x, 0, first.y)
 						second = Vector3(second.x, 0, second.y)
@@ -41,6 +44,9 @@ func render_frame(world: Dictionary) -> void:
 						first = Vector3(0, first.x, first.y)
 						second = Vector3(0, second.x, second.y)
 					_line(center + first, center + second, color)
+	if preview.size() > 1:
+		for i in range(preview.size() - 1):
+			_line(preview[i], preview[i + 1], preview_color)
 	if _drawing:
 		_lines.surface_end()
 

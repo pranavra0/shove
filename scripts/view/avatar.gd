@@ -88,11 +88,14 @@ func render_state(state: Dictionary, delta: float, time: float) -> void:
 	var speed: float = Vector2(velocity.x, velocity.z).length()
 	var stride: float = sin(time * speed * Tuning.VIS_STRIDE_RATE) * Tuning.VIS_STRIDE_AMOUNT if grounded else 0.0
 	var attack: float = float(state.get("attack_time", 0.0))
+	var shove: Dictionary = Kits.move(str(state.get("element", "earth")), "shove")
+	var active: float = float(shove.active)
+	var windup: float = float(shove.windup)
 	var reach: float = 0.0
-	if attack > Tuning.SHOVE_ACTIVE:
-		reach = -Tuning.VIS_WINDUP_PULL * (1.0 - (attack - Tuning.SHOVE_ACTIVE) / maxf(0.001, Tuning.SHOVE_WINDUP))
+	if attack > active:
+		reach = -Tuning.VIS_WINDUP_PULL * (1.0 - (attack - active) / maxf(0.001, windup))
 	elif attack > 0.0:
-		reach = Tuning.VIS_PUNCH_REACH * sin(PI * clampf(1.0 - attack / maxf(0.001, Tuning.SHOVE_ACTIVE), 0.0, 1.0))
+		reach = Tuning.VIS_PUNCH_REACH * sin(PI * clampf(1.0 - attack / maxf(0.001, active), 0.0, 1.0))
 	_left_hand.position.z = lerpf(_left_hand.position.z, -0.04 - reach - stride * 0.5, blend)
 	_right_hand.position.z = lerpf(_right_hand.position.z, -0.04 - reach + stride * 0.5, blend)
 	_left_hand.position.y = -0.12 + maxf(0.0, reach) * 0.3

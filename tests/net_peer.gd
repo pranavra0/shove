@@ -4,6 +4,11 @@ extends SceneTree
 
 var Tuning: Node
 var BotSim: GDScript
+var KitDefs: GDScript
+var ReplayCodec: GDScript
+var TuningCodec: GDScript
+var WorldSim: GDScript
+var MatchFlowSim: GDScript
 var _app: Node
 var _network
 var _role := ""
@@ -36,7 +41,23 @@ var _ko_events := 0
 var _peak_snapshot_rate := 0.0
 var _peak_dropped := 0
 var _phases: Array[String] = []
-
+var _scenario := "baseline"
+var _kit_slots: Array[String] = ["basic_shot", "curve_shot", "quick_fire", "shove", "high_jump", "recovery", "down_dash", "h_dash", "wall"]
+var _kit_flags: Dictionary = {"basic_shot": InputCmd.BASIC_SHOT, "curve_shot": InputCmd.CURVE_SHOT, "quick_fire": InputCmd.QUICK_FIRE, "high_jump": InputCmd.HIGH_JUMP, "down_dash": InputCmd.DOWN_DASH, "recovery": InputCmd.RECOVERY, "h_dash": InputCmd.H_DASH, "wall": InputCmd.WALL}
+var _kit_index := 0
+var _kit_activated: Dictionary = {}
+var _kit_outcomes: Dictionary = {"projectile_spawns": 0, "wall_spawns": 0, "projectile_state": 0, "wall_state": 0, "slam_hits": 0, "shove_hits": 0, "deflects": 0, "high_jump_up": 0, "recovery_used": 0, "down_dash_state": 0, "h_dash_speed": 0, "shove_cooldown": 0}
+var _recovery_jump_sent := false
+var _recovery_jump_released := false
+var _kit_patch_sent := false
+var _deflect_done := false
+var _replay_verified := false
+var _kit_patch_received := false
+var _legal_settings_bytes := 0
+var _full_start_payload_bytes := 0
+var _replicated_worlds := 0
+var _interpolated_projectiles := 0
+var _last_projectile_positions: Dictionary = {}
 
 func _initialize() -> void:
 	_run.call_deferred()
@@ -48,6 +69,14 @@ func _run() -> void:
 	_started_at = _now()
 	Tuning = root.get_node("Tuning")
 	BotSim = load("res://scripts/sim/bot.gd")
+	KitDefs = load("res://scripts/sim/kits.gd")
+	ReplayCodec = load("res://scripts/dev/replay.gd")
+	TuningCodec = load("res://scripts/dev/tuning_store.gd")
+	WorldSim = load("res://scripts/sim/world.gd")
+	MatchFlowSim = load("res://scripts/sim/match.gd")
+	if BotSim == null or KitDefs == null or ReplayCodec == null or TuningCodec == null or WorldSim == null or MatchFlowSim == null:
+		_fail("Could not load runtime simulation/data scripts after Tuning initialization")
+		return
 	# Configure before instantiating Main so the actual arena uses the same fixture.
 	# The host also transmits this configuration through NetSession at match start.
 	var fixture := {
@@ -59,8 +88,15 @@ func _run() -> void:
 		"KB_UP": 6.0, "KILL_PLANE": -8.0, "BOT_REACTION": 0.06,
 		"BOT_BHOP_SKILL": 0.4,
 	}
+	if _scenario == "full-kit":
+		fixture.merge({
+			"SPAWN_RADIUS": 1.3, "CENTER_SIZE": 5.0, "BASE_KB": 1.0,
+			"SHOVE_DAMAGE": 1.0, "KB_SCALE": 0.01, "KB_UP": 1.0, "KILL_PLANE": -20.0,
+		}, true)
 	for field: String in fixture:
 		Tuning.set(field, fixture[field])
+	if _scenario == "full-kit":
+		_legal_settings_bytes = _measure_legal_settings_bytes()
 	if _gui:
 		if DisplayServer.get_name() == "headless":
 			_fail("--gui needs a real rendering display, not the dummy renderer")
@@ -83,16 +119,20 @@ func _run() -> void:
 	_network.world_updated.connect(_on_world_updated)
 	_network.authoritative_events.connect(_on_authoritative_events)
 	_network.connection_error.connect(_on_connection_error)
+	_network.settings_changed.connect(_on_settings_changed)
 	var error: Error
 	if _role == "server":
 		error = _network.host(_port, _peer_name, 0)
 	else:
-		error = _network.join("127.0.0.1", _port, _peer_name, 1 if _peer_name == "client1" else 2)
+		error = _network.join("127.0.0.1", _port, _peer_name, 1 if _peer_name == "client1" else 2, "water" if _peer_name == "client1" else "fire")
 	if error != OK:
 		_fail("%s failed: %s" % [_role, error_string(error)])
 		return
 	if _role == "server":
-		_network.set_bot_fill(0)
+		_network.set_bot_fill(1 if _scenario == "full-kit" else 0)
+		if _scenario == "full-kit":
+			_network.members[-2].element = "air"
+			_network._broadcast_lobby()
 		_write_json("server-ready.json", {"port": _port, "pid": OS.get_process_id()})
 	while not _failed:
 		await process_frame
@@ -109,6 +149,12 @@ func _run() -> void:
 			if _lobby_at < 0.0:
 				_lobby_at = _now()
 				_queue_capture("lobby")
+				if _scenario == "full-kit" and _role == "server":
+					_full_start_payload_bytes = _measure_full_start_payload_bytes()
+					var reliable_limit: int = _reliable_raw_limit()
+					if _full_start_payload_bytes > reliable_limit:
+						_fail("Maximally populated legal start payload exceeds reliable transport bound (%d): %d" % [reliable_limit, _full_start_payload_bytes])
+						return
 			if _role == "server" and _now() - _lobby_at >= _stage_hold():
 				_started_match = _network.start_match()
 				if not _started_match:
@@ -145,6 +191,56 @@ func _run() -> void:
 func _bot_command() -> InputCmd:
 	if _network.world.is_empty() or not _network.world.has("players"):
 		return InputCmd.new()
+	if _scenario == "full-kit" and _kit_index < _kit_slots.size():
+		if _peer_name == "client2":
+			if _kit_index in [3, 4, 5, 6, 7, 8] and not _deflect_done:
+				var actor_id := _kit_actor_id()
+				if actor_id >= 0 and _network.world.players.has(actor_id):
+					var to_actor: Vector3 = _network.world.players[actor_id].position - _network.world.players[_network.local_id].position
+					var forward := Vector3(to_actor.x, 0.0, to_actor.z).normalized()
+					var target: Vector3 = _network.world.players[actor_id].position + Vector3(-forward.z, 0.0, forward.x) * 1.5
+					var aim: Vector3 = target - _network.world.players[_network.local_id].position
+					var shot := InputCmd.new(Vector2.ZERO, false, false, atan2(-aim.x, -aim.z))
+					shot.moves = InputCmd.BASIC_SHOT
+					_commands += 1
+					return shot
+			_commands += 1
+			return InputCmd.new()
+		if _peer_name == "client1":
+			var actor_id := _kit_actor_id()
+			if actor_id < 0 or not _network.world.players.has(actor_id):
+				return InputCmd.new()
+			var slot: String = _kit_slots[_kit_index]
+			var actor: Dictionary = _network.world.players[actor_id]
+			var airborne := not bool(actor.on_ground)
+			if slot == "recovery" and not airborne:
+				if not _recovery_jump_sent:
+					_recovery_jump_sent = true
+					var jump_cmd := InputCmd.new()
+					jump_cmd.jump = true
+					_commands += 1
+					return jump_cmd
+				if not _recovery_jump_released:
+					_recovery_jump_released = true
+					_commands += 1
+					return InputCmd.new()
+				_recovery_jump_sent = false
+				_recovery_jump_released = false
+				return InputCmd.new()
+			var target_id := _named_player_id("client2") if slot == "shove" or (_kit_index >= 4 and not _deflect_done) else _nearest_target(actor_id)
+			var yaw := 0.0
+			if target_id >= 0:
+				var offset: Vector3 = _network.world.players[target_id].position - actor.position
+				yaw = atan2(-offset.x, -offset.z)
+			var scripted := InputCmd.new(Vector2.ZERO, slot == "recovery" and airborne, slot == "shove" or (_kit_index >= 4 and not _deflect_done), yaw)
+			scripted.moves = int(_kit_flags.get(slot, 0))
+			if slot in ["basic_shot", "curve_shot", "quick_fire"]:
+				scripted.pitch = 0.8
+			_commands += 1
+			return scripted
+		if _role == "server":
+			_commands += 1
+			return InputCmd.new()
 	var decision: Dictionary = BotSim.command(_network.world, _network.local_id, _memory, Tuning.FIXED_DELTA)
 	_memory = decision.memory
 	var command: InputCmd = decision.cmd
@@ -155,18 +251,57 @@ func _bot_command() -> InputCmd:
 		_shove_commands += 1
 	return command
 
+func _kit_actor_id() -> int:
+	return _named_player_id("client1")
+
+func _named_player_id(player_name: String) -> int:
+	for id: Variant in _network.members:
+		if str(_network.members[id].get("name", "")) == player_name:
+			return int(id)
+	return -1
+
+func _nearest_target(actor_id: int) -> int:
+	var best_id := -1
+	var best_distance := INF
+	for id: int in _network.world.players:
+		if id == actor_id:
+			continue
+		var distance: float = _network.world.players[actor_id].position.distance_squared_to(_network.world.players[id].position)
+		if distance < best_distance:
+			best_distance = distance
+			best_id = id
+	return best_id
+
 
 func _all_ready() -> bool:
-	if not _network.connected or _network.members.size() != _expected_clients + 1:
+	if not _network.connected or _network.members.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0):
 		return false
 	for member: Dictionary in _network.members.values():
-		if bool(member.get("bot", false)) or not bool(member.get("ready", false)):
+		if not bool(member.get("ready", false)):
 			return false
 	return true
 
 
 func _on_world_updated(_world: Dictionary, flow: Dictionary) -> void:
 	_updates += 1
+	if ReplayCodec._valid_world(_world):
+		var complete := true
+		var has_cooldown_value := false
+		for player: Dictionary in _world.players.values():
+			var player_cooldown: Variant = player.get("cooldown", 0.0)
+			var cooldowns: Dictionary = player.get("cooldowns", {})
+			complete = complete and KitDefs.ELEMENTS.has(str(player.get("element", ""))) and (player_cooldown is int or player_cooldown is float) and is_finite(float(player_cooldown)) and float(player_cooldown) >= 0.0
+			for slot: Variant in cooldowns:
+				var value: Variant = cooldowns[slot]
+				if not KitDefs.SLOTS.has(str(slot)) or not (value is int or value is float) or not is_finite(float(value)) or float(value) < 0.0:
+					complete = false
+				if (value is int or value is float) and float(value) > 0.0:
+					has_cooldown_value = true
+			has_cooldown_value = has_cooldown_value or float(player.get("cooldown", 0.0)) > 0.0
+		if complete and has_cooldown_value:
+			_replicated_worlds += 1
+		if _role == "client" and _check_interpolation_midpoint():
+			_interpolated_projectiles += 1
 	var phase: String = str(flow.get("phase", ""))
 	if not _phases.has(phase):
 		_phases.append(phase)
@@ -174,16 +309,107 @@ func _on_world_updated(_world: Dictionary, flow: Dictionary) -> void:
 		_queue_capture("playing")
 	if _network.epoch == 1 and phase == "ringout":
 		_queue_capture("ko")
+	if _scenario == "full-kit" and _role == "server" and not _kit_patch_sent and _kit_index >= _kit_slots.size() and _kit_outcomes.projectile_state >= 3 and _kit_outcomes.wall_state >= 1 and _kit_outcomes.deflects >= 1:
+		_kit_patch_sent = true
+		_network.push_tuning("KIT_OVERRIDES", {"water": {"basic_shot": {"damage": 16.0}}})
+		_network.push_tuning("SHOVE_DAMAGE", 25.0)
+		_network.push_tuning("BASE_KB", 14.0)
+		_network.push_tuning("KB_SCALE", 0.2)
+		_network.push_tuning("KILL_PLANE", -8.0)
 
-
-func _on_authoritative_events(events: Array, _event_world: Dictionary) -> void:
+func _check_interpolation_midpoint() -> bool:
+	if _network._prediction == null:
+		return false
+	var history: Array = _network._prediction._history
+	for index in range(1, history.size()):
+		var left: Dictionary = history[index - 1].world
+		var right: Dictionary = history[index].world
+		for id: int in left.get("projectiles", {}):
+			if not right.get("projectiles", {}).has(id):
+				continue
+			var a: Dictionary = left.projectiles[id]
+			var b: Dictionary = right.projectiles[id]
+			if int(a.owner) != int(b.owner) or str(a.behavior) != str(b.behavior) or a.position == b.position:
+				continue
+			var now: float = (float(history[index - 1].time) + float(history[index].time)) * 0.5 + Tuning.NET_INTERPOLATION
+			var rendered: Dictionary = _network._prediction.render_world(now, 0.0)
+			if not rendered.get("projectiles", {}).has(id):
+				continue
+			var expected: Vector3 = a.position.lerp(b.position, 0.5)
+			var actual: Vector3 = rendered.projectiles[id].position
+			if actual.distance_to(expected) < 0.0001 and actual != a.position and actual != b.position:
+				return true
+	return false
+func _on_authoritative_events(events: Array, event_world: Dictionary) -> void:
 	if _network.epoch != 1:
 		return
+	var actor_id := _kit_actor_id()
 	for event: Dictionary in events:
 		if event.get("type", "") == "ko":
 			_ko_events += 1
 			_queue_capture("ko")
+		if event.get("type", "") == "deflect" and int(event.get("player", -1)) == actor_id:
+			_kit_outcomes.deflects += 1
+			_deflect_done = true
+			if _kit_activated.has("wall"):
+				_kit_index = _kit_slots.size()
+		if _scenario == "full-kit" and int(event.get("player", -1)) == actor_id:
+			var slot := ""
+			if event.get("type", "") == "shove":
+				slot = "shove"
+			elif event.get("type", "") == "move":
+				slot = str(event.get("slot", ""))
+			if not slot.is_empty() and _kit_slots.has(slot) and not _kit_activated.has(slot):
+				var actor: Dictionary = event_world.get("players", {}).get(actor_id, {})
+				var velocity: Vector3 = actor.get("velocity", Vector3.ZERO)
+				var physical := true
+				match slot:
+					"high_jump":
+						physical = velocity.y > 0.0 or actor.get("position", Vector3.ZERO).y > actor.get("spawn", Vector3.ZERO).y
+						if physical:
+							_kit_outcomes.high_jump_up += 1
+					"recovery":
+						physical = int(actor.get("recovery_used", 0)) > 0 and velocity.y > 0.0
+						if physical:
+							_kit_outcomes.recovery_used += 1
+					"down_dash":
+						physical = bool(actor.get("down_dashing", false)) or velocity.y < 0.0
+						if physical:
+							_kit_outcomes.down_dash_state += 1
+					"h_dash":
+						physical = Vector2(velocity.x, velocity.z).length() > 0.1
+						if physical:
+							_kit_outcomes.h_dash_speed += 1
+					"shove":
+						physical = float(actor.get("cooldown", 0.0)) > 0.0
+						if physical:
+							_kit_outcomes.shove_cooldown += 1
+				if physical:
+					_kit_activated[slot] = true
+					if slot != "wall" or _deflect_done:
+						_kit_index += 1
+		if event.get("type", "") == "hit" and int(event.get("attacker", -1)) == actor_id and event.get("source", "") == "down_dash":
+			_kit_outcomes.slam_hits += 1
+			continue
+		if event.get("type", "") == "hit" and int(event.get("attacker", -1)) == actor_id and event.get("source", "") == "shove":
+			_kit_outcomes.shove_hits += 1
+			continue
+		if int(event.get("player", -1)) != actor_id:
+			continue
+		if event.get("type", "") == "projectile_spawn":
+			_kit_outcomes.projectile_spawns += 1
+			if event_world.get("projectiles", {}).has(int(event.get("projectile", -1))):
+				_kit_outcomes.projectile_state += 1
+		elif event.get("type", "") == "wall_spawn":
+			_kit_outcomes.wall_spawns += 1
+			if event_world.get("walls", {}).has(int(event.get("wall", -1))):
+				_kit_outcomes.wall_state += 1
 
+
+func _on_settings_changed(values: Dictionary) -> void:
+	var overrides: Variant = values.get("KIT_OVERRIDES", {})
+	if overrides is Dictionary and overrides.get("water", {}).get("basic_shot", {}).get("damage", 0.0) == 16.0:
+		_kit_patch_received = true
 
 func _on_connection_error(reason: String) -> void:
 	if not _reported:
@@ -210,13 +436,39 @@ func _record_terminal() -> void:
 	for id: String in stocks:
 		if int(stocks[id]) > 0:
 			live.append(int(id))
-	if stocks.size() != _expected_clients + 1 or live.size() != 1 or winner != int(live[0]):
+	if stocks.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0) or live.size() != 1 or winner != int(live[0]):
 		_fail("Expected one natural winner and every real peer in authoritative terminal world: winner=%d stocks=%s" % [winner, stocks])
 		return
 	_terminal = {"epoch": _network.epoch, "tick": int(world.get("tick", -1)), "winner": winner, "stocks": stocks}
 	_winner_at = _now()
 	_queue_capture("winner")
 	_write_json(_peer_name + ".terminal.json", _terminal)
+	if _scenario == "full-kit" and _role == "server":
+		_replay_verified = _verify_recording()
+		if not _replay_verified:
+			_fail("Host replay diverged after the live KIT_OVERRIDES patch")
+
+func _verify_recording() -> bool:
+	var tape = _network.recording
+	if tape == null or not tape.settings.get("KIT_OVERRIDES", {}) is Dictionary:
+		return false
+	var patch_seen := false
+	for frame: Dictionary in tape.frames:
+		if frame.settings.has("KIT_OVERRIDES"):
+			patch_seen = true
+	if not patch_seen:
+		return false
+	var restore: Dictionary = TuningCodec.snapshot()
+	TuningCodec.apply(tape.settings)
+	var replay_world: Dictionary = tape.restart()
+	while tape.has_next():
+		var commands: Dictionary = tape.next_commands()
+		if not tape.frame_settings.is_empty():
+			TuningCodec.apply(tape.frame_settings)
+		replay_world = WorldSim.step(replay_world, commands, Tuning.FIXED_DELTA)
+	var matches: bool = replay_world == tape.final_world
+	TuningCodec.apply(restore)
+	return matches
 
 
 func _record_rematch() -> void:
@@ -225,7 +477,7 @@ func _record_rematch() -> void:
 		return
 	var world: Dictionary = _network.authoritative_world
 	var stocks: Dictionary = _stocks(world)
-	if stocks.size() != _expected_clients + 1:
+	if stocks.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0):
 		_fail("Rematch lost a real peer: " + str(stocks))
 		return
 	for stock: int in stocks.values():
@@ -238,6 +490,51 @@ func _record_rematch() -> void:
 	_queue_capture("rematch")
 
 
+func _max_legal_overrides() -> Dictionary:
+	var overrides: Dictionary = {}
+	for element: String in KitDefs.ELEMENTS:
+		var slots: Dictionary = {}
+		for slot: String in KitDefs.SLOTS:
+			var fields: Dictionary = {}
+			for field: String in KitDefs.move_fields(slot):
+				fields[field] = TuningCodec.kit_bounds(element, slot, field).y
+			if not fields.is_empty():
+				slots[slot] = fields
+		overrides[element] = slots
+	return overrides
+
+func _measure_legal_settings_bytes() -> int:
+	var values: Dictionary = TuningCodec.snapshot()
+	values["KIT_OVERRIDES"] = _max_legal_overrides()
+	return var_to_bytes(TuningCodec.encode(values)).size()
+
+func _measure_full_start_payload_bytes() -> int:
+	var maximum_settings: Dictionary = TuningCodec.snapshot()
+	maximum_settings["KIT_OVERRIDES"] = _max_legal_overrides()
+	var world_value: Dictionary = WorldSim.create(_network.members.keys())
+	for id: int in _network.members:
+		WorldSim.set_element(world_value, id, str(_network.members[id].get("element", "earth")))
+	var start_flow: Dictionary = MatchFlowSim.create()
+	start_flow.phase = "countdown"
+	var payload := {
+		"epoch": _network.epoch + 1, "world": world_value, "flow": start_flow,
+		"settings": TuningCodec.encode(maximum_settings), "members": _network.members,
+	}
+	return var_to_bytes(payload).size()
+func _reliable_raw_limit() -> int:
+	var network_script: Script = _network.get_script()
+	return int(network_script.get_script_constant_map().get("RELIABLE_RAW_LIMIT", 0))
+
+
+func _elements(world_value: Dictionary) -> Array[String]:
+	var result: Array[String] = []
+	for player: Dictionary in world_value.get("players", {}).values():
+		var element: String = str(player.get("element", ""))
+		if not result.has(element):
+			result.append(element)
+	result.sort()
+	return result
+
 func _result() -> Dictionary:
 	return {
 		"ok": true, "role": _role, "name": _peer_name, "local_id": _network.local_id,
@@ -246,8 +543,26 @@ func _result() -> Dictionary:
 		"world_updates": _updates, "ko_events": _ko_events,
 		"peak_snapshot_rate": _peak_snapshot_rate, "dropped": _peak_dropped,
 		"stats": _network.stats.duplicate(true), "captures": _captures,
-		"latency_ms": Tuning.NET_LATENCY_MS, "packet_loss": Tuning.NET_PACKET_LOSS,
+		"latency_ms": Tuning.NET_LATENCY_MS, "jitter_ms": Tuning.NET_JITTER_MS, "packet_loss": Tuning.NET_PACKET_LOSS,
 		"elapsed_seconds": _now() - _started_at,
+		"elements": _elements(_network.authoritative_world),
+		"replay_verified": _replay_verified,
+		"kit_patch_received": _kit_patch_received,
+		"full_kit": {
+			"activated_moves": _kit_activated.size(), "slots": _kit_activated,
+			"projectile_spawns": _kit_outcomes.projectile_spawns, "wall_spawns": _kit_outcomes.wall_spawns,
+			"projectile_state": _kit_outcomes.projectile_state, "wall_state": _kit_outcomes.wall_state,
+			"slam_hits": _kit_outcomes.slam_hits, "shove_hits": _kit_outcomes.shove_hits,
+			"deflects": _kit_outcomes.deflects,
+			"high_jump_up": _kit_outcomes.high_jump_up, "recovery_used": _kit_outcomes.recovery_used,
+			"down_dash_state": _kit_outcomes.down_dash_state, "h_dash_speed": _kit_outcomes.h_dash_speed,
+			"shove_cooldown": _kit_outcomes.shove_cooldown,
+		},
+		"legal_settings_bytes": _legal_settings_bytes,
+		"full_start_payload_bytes": _full_start_payload_bytes,
+		"reliable_raw_limit": _reliable_raw_limit(),
+		"replicated_worlds": _replicated_worlds,
+		"interpolated_projectiles": _interpolated_projectiles,
 	}
 
 
@@ -328,6 +643,8 @@ func _parse_arguments() -> bool:
 			_expected_clients = argument.trim_prefix("--expected-clients=").to_int()
 		elif argument.begins_with("--timeout="):
 			_timeout = argument.trim_prefix("--timeout=").to_float()
+		elif argument.begins_with("--scenario="):
+			_scenario = argument.trim_prefix("--scenario=")
 		elif argument == "--gui":
 			_gui = true
 		elif argument.begins_with("--capture-dir="):
