@@ -62,9 +62,16 @@ func render_state(state: Dictionary, delta: float, time: float) -> void:
 	if not _built:
 		_build()
 	position = state.get("position", Vector3.ZERO)
-	visible = int(state.get("stocks", 1)) > 0
+	visible = World.is_player_active(state)
 	if not visible:
 		return
+	var team: int = int(state.get("team", -1))
+	var color: Color = _color
+	if team >= 0:
+		var team_colors: Array[Color] = Tuning.CP_TEAM_COLORS
+		if team < team_colors.size():
+			color = _color.lerp(team_colors[team], 0.72)
+	_material.set_shader_parameter("body_color", color)
 	rotation.y = float(state.get("yaw", 0.0))
 	var velocity: Vector3 = state.get("velocity", Vector3.ZERO)
 	var local_velocity: Vector3 = Basis(Vector3.UP, -rotation.y) * velocity

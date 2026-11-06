@@ -4,7 +4,7 @@ extends RefCounted
 # The scene owns menu/setup entry and World stepping; this state only tracks round flow.
 static func create() -> Dictionary:
 	return {
-		"phase": "menu", "elapsed": 0.0, "winner": -1,
+		"phase": "menu", "elapsed": 0.0, "winner": -1, "winner_team": -1,
 		"countdown": int(ceil(Tuning.MATCH_COUNTDOWN)),
 		"resume_phase": "playing", "last_event_tick": -1,
 	}
@@ -15,6 +15,10 @@ static func step(state: Dictionary, world: Dictionary, dt: float) -> Dictionary:
 	if phase == "menu" or phase == "setup" or phase == "winner":
 		return result
 	result.elapsed = float(result.elapsed) + maxf(dt, 0.0)
+	var mode: String = str(world.get("mode", "ffa"))
+	if mode == "control":
+		var control: Dictionary = world.get("control", {})
+		result.winner_team = int(control.get("winner_team", -1))
 	if phase == "countdown":
 		result.countdown = int(ceil(maxf(0.0, Tuning.MATCH_COUNTDOWN - float(result.elapsed))))
 		if result.elapsed >= Tuning.MATCH_COUNTDOWN:
@@ -25,6 +29,23 @@ static func step(state: Dictionary, world: Dictionary, dt: float) -> Dictionary:
 			_enter(result, "winner")
 		return result
 	if phase != "playing" and phase != "ringout":
+		return result
+	if mode == "control":
+		if int(result.winner_team) >= 0:
+			_enter(result, "round_end")
+			return result
+		var control_ko: bool = false
+		if int(world.tick) != int(result.last_event_tick):
+			result.last_event_tick = int(world.tick)
+			for event: Dictionary in world.events:
+				if str(event.get("type", "")) == "ko":
+					control_ko = true
+					break
+		if control_ko:
+			result.resume_phase = "playing"
+			_enter(result, "ringout")
+		elif phase == "ringout" and result.elapsed >= Tuning.MATCH_RINGOUT_TIME:
+			_enter(result, "playing")
 		return result
 	var live: Array = []
 	for id in world.players:

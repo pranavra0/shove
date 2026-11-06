@@ -188,6 +188,18 @@ var KILL_PLANE: float = -16.0
 var RESPAWN_INVULN: float = 2.0
 var BODY_PUSH: float = 0.65
 var SPAWN_RADIUS: float = 6.0
+var CP_LANE_OFFSET: float = 12.0
+var CP_ZONE_RADIUS: float = 3.0
+var CP_CAPTURE_TIME: float = 2.0
+var CP_CAPTURE_HEIGHT: float = 0.3
+var CP_SCORE_RATE: float = 4.0
+var CP_SCORE_TARGET: float = 100.0
+var CP_KB_BONUS: float = 1.15
+var CP_RINGOUT_PENALTY: float = 2.0
+var CP_RESPAWN_DELAY: float = 2.0
+var CP_TEAM_COLORS: Array[Color] = [Color("4d8ec9"), Color("d98245")]
+var BOT_CONTROL_ZONE_MARGIN: float = 2.0
+var BOT_CONTROL_CENTER_RADIUS: float = 3.0
 
 # Offline bot skill and match timing.
 var BOT_REACTION: float = 0.12

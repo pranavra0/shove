@@ -24,9 +24,11 @@ func _run() -> void:
 	app.start_match([1])
 	app.flow.phase = "playing"
 	app.paused = false
-	await _wait_for_control_focus(app)
+	if not await _wait_for_control_focus(app):
+		_fail("Rendered input smoke could not acquire real native window focus and gameplay mouse capture.")
+		return
 	if not app.get_window().has_focus():
-		_fail("Rendered input smoke requires a focused display window")
+		_fail("Rendered input smoke requires a focused display window.")
 		return
 	app._sync_cursor()
 	if not _check(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "Gameplay must capture the mouse in the focused window"):
@@ -131,13 +133,22 @@ func _run() -> void:
 	print("PASS kit scene: actual InputMap actions, focused mouse capture, physical pitch, entities and replay")
 	quit(0)
 
-func _wait_for_control_focus(app) -> void:
-	for frame in range(120):
-		if app.get_window().has_focus() and app._can_control():
+func _wait_for_control_focus(app) -> bool:
+	var window: Window = app.get_window()
+	var deadline_msec: int = Time.get_ticks_msec() + 30000
+	var next_focus_request_msec: int = 0
+	while Time.get_ticks_msec() < deadline_msec:
+		var now_msec: int = Time.get_ticks_msec()
+		if now_msec >= next_focus_request_msec:
+			window.grab_focus()
+			next_focus_request_msec = now_msec + 500
+		if window.has_focus() and app._can_control():
 			app._sync_cursor()
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-				return
+				return true
+		await physics_frame
 		await process_frame
+	return false
 
 func _check(condition: bool, message: String) -> bool:
 	if condition:

@@ -83,7 +83,7 @@ func reconcile(world: Dictionary, ack: int, now: float) -> void:
 		_history.pop_front()
 
 func _discontinuous(a: Dictionary, b: Dictionary) -> bool:
-	return a.stocks != b.stocks or a.spawn != b.spawn or (float(b.invuln) > float(a.invuln) + 0.00001) or a.position.distance_to(b.position) > Tuning.NET_TELEPORT_DISTANCE
+	return a.stocks != b.stocks or a.team != b.team or ((float(a.respawn_remaining) <= 0.0) != (float(b.respawn_remaining) <= 0.0)) or a.spawn != b.spawn or (float(b.invuln) > float(a.invuln) + 0.00001) or a.position.distance_to(b.position) > Tuning.NET_TELEPORT_DISTANCE
 
 func render_world(now: float, delta: float) -> Dictionary:
 	if predicted.is_empty():
@@ -143,6 +143,8 @@ func render_world(now: float, delta: float) -> Dictionary:
 			rendered.velocity = from_velocity.lerp(to_velocity, weight)
 			rendered_projectiles[id] = rendered
 		result["projectiles"] = rendered_projectiles
+		result["mode"] = discrete_world.get("mode", "ffa")
+		result["control"] = discrete_world.get("control", {})
 		var historical_walls: Dictionary = discrete_world.get("walls", {})
 		result["walls"] = historical_walls.duplicate(true)
 	if result.players.has(_id):

@@ -56,7 +56,7 @@ func save(path: String) -> Error:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return FileAccess.get_open_error()
-	file.store_string(JSON.stringify({"version": 2, "tape": encoded}, "", true, true))
+	file.store_string(JSON.stringify({"version": 3, "tape": encoded}, "", true, true))
 	return file.get_error()
 
 func load_file(path: String) -> Error:
@@ -67,7 +67,7 @@ func load_file(path: String) -> Error:
 	if json.parse(file.get_as_text()) != OK:
 		return ERR_PARSE_ERROR
 	var envelope: Variant = json.data
-	if not envelope is Dictionary or envelope.size() != 2 or envelope.get("version") != 2 or not envelope.has("tape"):
+	if not envelope is Dictionary or envelope.size() != 2 or envelope.get("version") != 3 or not envelope.has("tape"):
 		return ERR_INVALID_DATA
 	var decoded: Dictionary = _decode(envelope.tape)
 	if not decoded.ok or not _valid(decoded.value):
@@ -211,18 +211,31 @@ static func _valid(payload: Variant) -> bool:
 	return true
 
 static func _valid_world(world: Variant) -> bool:
-	if not world is Dictionary or world.size() != 6 or not world.has_all(["tick", "players", "events", "projectiles", "walls", "next_entity_id"]):
+	if not world is Dictionary or world.size() != 8 or not world.has_all(["tick", "players", "events", "projectiles", "walls", "next_entity_id", "mode", "control"]):
 		return false
 	if not world.tick is int or world.tick < 0 or not world.players is Dictionary or world.players.size() > 8:
+		return false
+	if not world.mode is String or not ["ffa", "control"].has(world.mode) or not world.control is Dictionary:
+		return false
+	if world.mode == "ffa":
+		if not world.control.is_empty():
+			return false
+	elif not _valid_control(world.control):
 		return false
 	if not world.events is Array or world.events.size() > 512 or not world.projectiles is Dictionary or world.projectiles.size() > 128:
 		return false
 	if not world.walls is Dictionary or world.walls.size() > 64 or not world.next_entity_id is int or world.next_entity_id < 1:
 		return false
 	var max_id: int = 0
-	for id in world.players:
-		if not id is int or not world.players[id] is Dictionary or not _valid_player(world.players[id], world.players):
+	var team_counts: Array[int] = [0, 0]
+	for id: Variant in world.players:
+		if not id is int or not world.players[id] is Dictionary or not _valid_player(world.players[id], world.players, world.mode):
 			return false
+		if world.mode == "control":
+			var player: Dictionary = world.players[id]
+			team_counts[int(player.team)] += 1
+			if team_counts[int(player.team)] > 4:
+				return false
 	for id in world.projectiles:
 		if not id is int or id <= 0 or world.walls.has(id) or not world.projectiles[id] is Dictionary:
 			return false
@@ -246,9 +259,37 @@ static func _valid_world(world: Variant) -> bool:
 			return false
 	return true
 
-static func _valid_player(player: Dictionary, players: Dictionary) -> bool:
-	var fields: Array = ["position", "velocity", "on_ground", "ground_angle", "yaw", "damage", "stocks", "hitstun", "invuln", "attack_time", "cooldown", "attack_hits", "spawn", "element", "cooldowns", "move_state", "recovery_used", "jump_held", "down_dashing", "dash_time", "chain_timer", "chain_hits", "chain_target", "attack_serial"]
+static func _valid_control(control: Dictionary) -> bool:
+	if control.size() != 3 or not control.has_all(["zones", "scores", "winner_team"]) or not control.zones is Array or control.zones.size() != 2 or not control.scores is Array or control.scores.size() != 2:
+		return false
+	if not control.winner_team is int or control.winner_team < -1 or control.winner_team > 1:
+		return false
+	for score: Variant in control.scores:
+		if not _finite_number(score) or float(score) < 0.0 or float(score) > 2000000000.0:
+			return false
+	for zone: Variant in control.zones:
+		if not zone is Dictionary or zone.size() != 5 or not zone.has_all(["position", "radius", "owner", "capturing", "progress"]):
+			return false
+		if not zone.position is Vector3 or not zone.position.is_finite() or zone.position.length_squared() > 100000000.0:
+			return false
+		if not _finite_number(zone.radius) or float(zone.radius) <= 0.0 or float(zone.radius) > 1000.0:
+			return false
+		if not zone.owner is int or zone.owner < -1 or zone.owner > 1 or not zone.capturing is int or zone.capturing < -1 or zone.capturing > 1:
+			return false
+		if not _finite_number(zone.progress) or float(zone.progress) < 0.0 or float(zone.progress) > 1.0:
+			return false
+	return true
+
+static func _valid_player(player: Dictionary, players: Dictionary, mode: String) -> bool:
+	var fields: Array = ["position", "velocity", "on_ground", "ground_angle", "yaw", "damage", "stocks", "hitstun", "invuln", "attack_time", "cooldown", "attack_hits", "spawn", "element", "cooldowns", "move_state", "recovery_used", "jump_held", "down_dashing", "dash_time", "chain_timer", "chain_hits", "chain_target", "attack_serial", "team", "respawn_remaining"]
 	if player.size() != fields.size() or not player.has_all(fields):
+		return false
+	if not player.team is int or not _finite_number(player.respawn_remaining) or player.respawn_remaining < 0.0 or player.respawn_remaining > 60.0:
+		return false
+	if mode == "ffa":
+		if player.team != -1 or player.respawn_remaining != 0.0:
+			return false
+	elif player.team < 0 or player.team > 1:
 		return false
 	for field in ["position", "velocity", "spawn"]:
 		if not player[field] is Vector3 or not player[field].is_finite():
@@ -256,6 +297,10 @@ static func _valid_player(player: Dictionary, players: Dictionary) -> bool:
 	for field in ["ground_angle", "yaw", "damage", "hitstun", "invuln", "attack_time", "cooldown", "dash_time", "chain_timer"]:
 		if not _finite_number(player[field]):
 			return false
+		if field in ["hitstun", "invuln", "attack_time", "cooldown", "dash_time", "chain_timer"] and (float(player[field]) < 0.0 or float(player[field]) > 3600.0):
+			return false
+	if player.damage < 0.0 or player.damage > 1000000.0:
+		return false
 	if not player.on_ground is bool or not player.jump_held is bool or not player.down_dashing is bool:
 		return false
 	if not player.stocks is int or player.stocks < 0 or not player.recovery_used is int or player.recovery_used < 0 or player.recovery_used > 2 or not player.chain_hits is int or player.chain_hits < 0 or not player.chain_target is int or (player.chain_target != -1 and not players.has(player.chain_target)) or not player.attack_serial is int or player.attack_serial < 0:
@@ -268,7 +313,7 @@ static func _valid_player(player: Dictionary, players: Dictionary) -> bool:
 	if not player.cooldowns is Dictionary or player.cooldowns.size() > 9:
 		return false
 	for slot in player.cooldowns:
-		if not _valid_slot(slot) or not _finite_number(player.cooldowns[slot]) or player.cooldowns[slot] < 0.0:
+		if not _valid_slot(slot) or not _finite_number(player.cooldowns[slot]) or player.cooldowns[slot] < 0.0 or player.cooldowns[slot] > 3600.0:
 			return false
 	var state: Variant = player.move_state
 	if not state is Dictionary:
@@ -277,7 +322,7 @@ static func _valid_player(player: Dictionary, players: Dictionary) -> bool:
 		return true
 	if state.size() != 6 or not state.has_all(["slot", "windup", "duration", "aim", "strafe", "activated"]):
 		return false
-	return _valid_slot(state.get("slot")) and _finite_number(state.windup) and state.windup >= 0.0 and _finite_number(state.duration) and state.duration >= 0.0 and state.aim is Vector3 and state.aim.is_finite() and _finite_number(state.strafe) and state.activated is bool
+	return _valid_slot(state.get("slot")) and _finite_number(state.windup) and state.windup >= 0.0 and state.windup <= 3600.0 and _finite_number(state.duration) and state.duration >= 0.0 and state.duration <= 3600.0 and state.aim is Vector3 and state.aim.is_finite() and _finite_number(state.strafe) and state.activated is bool
 
 static func _valid_projectile(entity: Dictionary, id: int, players: Dictionary) -> bool:
 	var fields: Array = ["id", "position", "velocity", "owner", "element", "slot", "age", "deflections", "behavior", "damage", "kb_base", "kb_scale", "momentum", "size", "duration", "hitstun", "kb_up", "curve", "gravity", "homing", "bounce_count", "hit_ids", "spike_pop_speed", "spike_damage_mult", "spike_kb_mult"]
@@ -292,6 +337,8 @@ static func _valid_projectile(entity: Dictionary, id: int, players: Dictionary) 
 	for field in ["age", "damage", "kb_base", "kb_scale", "size", "duration", "hitstun", "kb_up", "gravity", "homing", "spike_pop_speed", "spike_damage_mult", "spike_kb_mult"]:
 		if not _finite_number(entity[field]) or entity[field] < 0.0:
 			return false
+		if field in ["age", "duration", "hitstun"] and entity[field] > 3600.0:
+			return false
 	if not _finite_number(entity.curve):
 		return false
 	if entity.size <= 0.0 or entity.duration <= 0.0 or not entity.deflections is int or entity.deflections < 0 or entity.deflections > 1000000 or not entity.bounce_count is int or entity.bounce_count < 0 or entity.bounce_count > 1000000:
@@ -303,7 +350,7 @@ static func _valid_projectile(entity: Dictionary, id: int, players: Dictionary) 
 
 static func _valid_wall(entity: Dictionary, id: int, players: Dictionary) -> bool:
 	var fields: Array = ["id", "position", "size", "owner", "element", "age", "duration", "hp", "hit_shoves"]
-	if entity.size() != fields.size() or not entity.has_all(fields) or not entity.id is int or entity.id != id or not entity.position is Vector3 or not entity.position.is_finite() or not entity.size is Vector3 or not entity.size.is_finite() or entity.size.x <= 0.0 or entity.size.y <= 0.0 or entity.size.z <= 0.0 or not entity.owner is int or not players.has(entity.owner) or not _valid_element(entity.element) or not _finite_number(entity.age) or entity.age < 0.0 or not _finite_number(entity.duration) or entity.duration <= 0.0 or not entity.hp is int or entity.hp <= 0 or not entity.hit_shoves is Dictionary or entity.hit_shoves.size() > 8:
+	if entity.size() != fields.size() or not entity.has_all(fields) or not entity.id is int or entity.id != id or not entity.position is Vector3 or not entity.position.is_finite() or not entity.size is Vector3 or not entity.size.is_finite() or entity.size.x <= 0.0 or entity.size.y <= 0.0 or entity.size.z <= 0.0 or not entity.owner is int or not players.has(entity.owner) or not _valid_element(entity.element) or not _finite_number(entity.age) or entity.age < 0.0 or entity.age > 3600.0 or not _finite_number(entity.duration) or entity.duration <= 0.0 or entity.duration > 3600.0 or not entity.hp is int or entity.hp <= 0 or not entity.hit_shoves is Dictionary or entity.hit_shoves.size() > 8:
 		return false
 	for owner in entity.hit_shoves:
 		if not owner is int or not players.has(owner) or not entity.hit_shoves[owner] is int or entity.hit_shoves[owner] < 0:

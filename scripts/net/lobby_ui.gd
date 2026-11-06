@@ -121,6 +121,14 @@ func show_lobby() -> void:
 		)
 		app.menu_panel.add_child(elements)
 	if net.hosting:
+		app._menu_label("Mode")
+		var mode := OptionButton.new()
+		mode.name = "LobbyMode"
+		mode.add_item("Free-for-all")
+		mode.add_item("Control points")
+		mode.select(1 if net.selected_mode == "control" else 0)
+		mode.item_selected.connect(func(index: int) -> void: net.set_mode("control" if index == 1 else "ffa"))
+		app.menu_panel.add_child(mode)
 		app._menu_label("Bot fill")
 		var fill := OptionButton.new()
 		fill.name = "BotFill"
@@ -150,8 +158,9 @@ func show_pause(value: bool) -> void:
 
 func show_winner() -> void:
 	var winner: int = int(app.flow.winner)
+	var winner_team: int = int(app.world.get("control", {}).get("winner_team", -1))
 	var name: String = str(app.network.members.get(winner, {}).get("name", "No one"))
-	var result: String = "It’s a draw." if winner == -1 else ("You win." if winner == app.local_id else name + " wins.")
+	var result: String = ("Team %d wins." % (winner_team + 1)) if winner_team >= 0 else ("It’s a draw." if winner == -1 else ("You win." if winner == app.local_id else name + " wins."))
 	app._clear_menu(result)
 	if app.network.hosting:
 		app._menu_button("Rematch", "Rematch", func() -> void: app.network.start_match())

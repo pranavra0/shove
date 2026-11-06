@@ -6,12 +6,43 @@ func _initialize() -> void:
 func _run() -> void:
 	var world_script: GDScript = load("res://scripts/sim/world.gd")
 	var session_script: GDScript = load("res://scripts/net/session.gd")
+	var replay_script: GDScript = load("res://scripts/dev/replay.gd")
 	var prediction_script: GDScript = load("res://scripts/net/prediction.gd")
 	var tune: Node = root.get_node("Tuning")
 	var session = session_script.new()
 	root.add_child(session)
 	session.local_id = 2
 	session.epoch = 1
+	session.set_mode("control")
+	assert(session.selected_mode == "ffa", "clients cannot inject a lobby mode")
+	session.hosting = true
+	session.set_mode("control")
+	assert(session.selected_mode == "control", "host can select control in lobby")
+	session.flow = {"phase": "countdown"}
+	session.set_mode("ffa")
+	assert(session.selected_mode == "control", "host mode selection is locked outside lobby")
+	session.flow = {"phase": "lobby"}
+	session.hosting = false
+	session.hosting = true
+	session.flow = {"phase": "playing"}
+	session.members = {1: {"bot": false}, 2: {"bot": false}}
+	var control_world: Dictionary = world_script.create([1, 2], "control")
+	control_world.players[1].attack_hits = [2]
+	control_world.players[1].chain_target = 2
+	control_world.players[1].chain_hits = 1
+	control_world.projectiles[1] = {"owner": 2}
+	control_world.walls[2] = {"owner": 2}
+	control_world.events = [{"type": "ko", "player": 2}]
+	session.world = control_world
+	session._peer_disconnected(2)
+	assert(not session.world.players.has(2) and session.world.projectiles.is_empty() and session.world.walls.is_empty(), "control departure removes the disconnected participant and their owned entities")
+	assert(session.world.players[1].attack_hits.is_empty() and session.world.players[1].chain_target == -1, "control departure clears references to the disconnected participant")
+	assert(session.world.events.is_empty() and replay_script._valid_world(session.world), "control departure creates a valid clean replay segment")
+	assert(session.recording.initial_world == session.world, "control departure starts a new exact recording segment")
+	session.hosting = false
+	session.members.clear()
+	session.world = {}
+	session.authoritative_world = {}
 	var initial: Dictionary = world_script.create([1, 2])
 	session._prediction = prediction_script.new()
 	session._prediction.begin(initial, 2, 0.0)

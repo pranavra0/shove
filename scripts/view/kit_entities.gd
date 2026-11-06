@@ -4,20 +4,25 @@ extends Node3D
 var _instances: Dictionary = {}
 var _signatures: Dictionary = {}
 
+var _materials: Dictionary = {}
 func render_world(world: Dictionary) -> void:
 	var live: Dictionary = {}
 	for kind: String in ["projectiles", "walls"]:
 		var entities: Dictionary = world.get(kind, {})
-		for raw_id in entities:
+		for raw_id: Variant in entities:
 			var entity: Dictionary = entities[raw_id]
 			var id: int = int(raw_id)
 			var key: String = "%s:%d" % [kind, id]
 			live[key] = true
 			var element: String = str(entity.get("element", "earth"))
-			var signature: String = kind + ":" + element
+			var owner_id: int = int(entity.get("owner", -1))
+			var players: Dictionary = world.get("players", {})
+			var owner_player: Dictionary = players.get(owner_id, {})
+			var team: int = int(owner_player.get("team", -1))
+			var signature: String = kind + ":" + element + ":" + str(team)
 			if not _instances.has(key) or _signatures.get(key, "") != signature:
 				_remove_entity(key)
-				_create_entity(key, signature, kind, element, entity)
+				_create_entity(key, signature, kind, element, team, entity)
 			_update_transform(_instances[key], kind, entity)
 	for key: String in _instances.keys():
 		if not live.has(key):
@@ -27,8 +32,7 @@ func clear() -> void:
 	for key: String in _instances.keys():
 		_remove_entity(key)
 
-func _create_entity(key: String, signature: String, kind: String, element: String, entity: Dictionary) -> void:
-	var color: Color = Kits.color(element)
+func _create_entity(key: String, signature: String, kind: String, element: String, team: int, entity: Dictionary) -> void:
 	var root := Node3D.new()
 	root.name = key.replace(":", "_")
 	var shape: Mesh
@@ -53,19 +57,34 @@ func _create_entity(key: String, signature: String, kind: String, element: Strin
 			var box := BoxMesh.new()
 			box.size = Vector3.ONE * extent * 2.0
 			shape = box
-	var face_color: Color = Color("#747b82") if kind == "walls" else color
 	var instance := _add_mesh(root, shape)
-	var outline := ShaderMaterial.new()
-	outline.shader = preload("res://scripts/view/outline.gdshader")
-	outline.set_shader_parameter("outline_color", color if kind == "walls" else Color(0.025, 0.03, 0.04))
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_color = face_color
-	material.next_pass = outline
+	var material: StandardMaterial3D = _entity_material(signature, kind, element, team)
 	instance.material_override = material
 	add_child(root)
 	_instances[key] = root
 	_signatures[key] = signature
+
+func _entity_material(signature: String, kind: String, element: String, team: int) -> StandardMaterial3D:
+	if _materials.has(signature):
+		return _materials[signature]
+	var color: Color = Kits.color(element)
+	var team_color: Color = color
+	if team >= 0:
+		var team_colors: Array[Color] = Tuning.CP_TEAM_COLORS
+		if team < team_colors.size():
+			team_color = team_colors[team]
+	var face_color: Color = Color("#747b82") if kind == "walls" else color
+	if team >= 0:
+		face_color = face_color.lerp(team_color, 0.48)
+	var outline := ShaderMaterial.new()
+	outline.shader = preload("res://scripts/view/outline.gdshader")
+	outline.set_shader_parameter("outline_color", team_color if team >= 0 else color if kind == "walls" else Color(0.025, 0.03, 0.04))
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = face_color
+	material.next_pass = outline
+	_materials[signature] = material
+	return material
 
 func _add_mesh(root: Node3D, mesh: Mesh) -> MeshInstance3D:
 	var instance := MeshInstance3D.new()

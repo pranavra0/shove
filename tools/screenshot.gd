@@ -5,7 +5,7 @@ extends SceneTree
 ## --hold keeps the rendered game window open after capture for manual inspection.
 
 const CAPTURE_SIZE := Vector2i(1280, 800)
-const SCENARIOS := ["menu", "arena", "character", "bhop", "impact", "ko", "hud", "tuning", "debug", "countdown", "winner", "projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect", "tuning_element", "dummy", "trajectory"]
+const SCENARIOS := ["menu", "arena", "character", "bhop", "impact", "ko", "hud", "tuning", "debug", "countdown", "winner", "projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect", "tuning_element", "dummy", "trajectory", "control_capture"]
 const SETTLE_FRAMES := 3
 
 var _scenario := "all"

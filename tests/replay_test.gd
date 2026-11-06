@@ -126,13 +126,18 @@ func _test_replay() -> void:
 	var file := FileAccess.open("user://replay_test.json", FileAccess.READ)
 	var envelope: Dictionary = JSON.parse_string(file.get_as_text())
 	file.close()
-	assert(envelope.version == 2)
+	assert(envelope.version == 3)
+	envelope.version = 2
+	file = FileAccess.open("user://replay_bad_test.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(envelope))
+	file.close()
+	assert(loaded.load_file("user://replay_bad_test.json") == ERR_INVALID_DATA)
 	envelope.version = 1
 	file = FileAccess.open("user://replay_bad_test.json", FileAccess.WRITE)
 	file.store_string(JSON.stringify(envelope))
 	file.close()
 	assert(loaded.load_file("user://replay_bad_test.json") == ERR_INVALID_DATA)
-	envelope.version = 2
+	envelope.version = 3
 	envelope.tape = {"t": "Dictionary", "v": [["initial", {"t": "int", "v": "not an integer"}]]}
 	file = FileAccess.open("user://replay_bad_test.json", FileAccess.WRITE)
 	file.store_string(JSON.stringify(envelope))
@@ -163,6 +168,33 @@ func _test_replay() -> void:
 	malformed.projectiles[1] = {"id": 1, "position": Vector3.ZERO, "velocity": Vector3.ZERO, "owner": 1234, "element": "earth", "slot": "basic_shot", "age": 0.0, "deflections": 0, "behavior": "level", "damage": 1.0, "kb_base": 1.0, "kb_scale": 1.0, "momentum": Vector3.ZERO, "size": 1.0, "duration": 1.0, "hitstun": 0.0, "kb_up": 1.0, "curve": 0.0, "gravity": 0.0, "homing": 0.0, "bounce_count": 0, "hit_ids": [], "spike_pop_speed": 0.0, "spike_damage_mult": 1.0, "spike_kb_mult": 1.0}
 	malformed.next_entity_id = 2
 	assert(not Tape._valid({"initial": malformed, "settings": {}, "frames": [], "final": starting}))
+	var control_world: Dictionary = World.create([1, 2, 3, 4], "control")
+	assert(Tape._valid_world(control_world))
+	var bad_control: Dictionary = control_world.duplicate(true)
+	bad_control.players[1].team = -1
+	assert(not Tape._valid_world(bad_control))
+	bad_control = control_world.duplicate(true)
+	bad_control.control.zones[0].progress = 1.1
+	assert(not Tape._valid_world(bad_control))
+	bad_control = control_world.duplicate(true)
+	bad_control.control.scores[1] = INF
+	assert(not Tape._valid_world(bad_control))
+	bad_control = control_world.duplicate(true)
+	bad_control.players[1].respawn_remaining = 61.0
+	assert(not Tape._valid_world(bad_control))
+	bad_control = starting.duplicate(true)
+	bad_control.mode = "control"
+	assert(Store.decode(Store.encode(original)) == original)
+	Store.apply(original)
+	assert(Store.snapshot() == original)
+	assert(Store.decode(Store.encode({"BOT_CONTROL_ZONE_MARGIN": 2.0, "BOT_CONTROL_CENTER_RADIUS": 3.0})).size() == 2)
+	assert(Store.decode(Store.encode({"BOT_CONTROL_ZONE_MARGIN": -1.0})).is_empty())
+	assert(Store.decode(Store.encode({"BOT_CONTROL_CENTER_RADIUS": 0.0})).is_empty())
+	assert(Store.decode(Store.encode({"CP_CAPTURE_TIME": 0.0})).is_empty())
+	assert(Store.decode(Store.encode({"CP_SCORE_RATE": -1.0})).is_empty())
+	assert(Store.decode(Store.encode({"CP_TEAM_COLORS": [Color.BLUE]})).is_empty())
+	assert(Store.decode(Store.encode({"CP_TEAM_COLORS": [Color.BLUE, Color.ORANGE]})).has("CP_TEAM_COLORS"))
+	assert(not Tape._valid_world(bad_control))
 	Store.apply(original)
 	DirAccess.remove_absolute("user://replay_test.json")
 	DirAccess.remove_absolute("user://replay_bad_test.json")

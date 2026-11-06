@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3 M6 — Control points
+
+- Added selectable Control points mode alongside Free-for-all (the default): two balanced teams, side-zone captures, ownership scoring and knockback bonus, team-score ring-out penalty, and delayed respawns without elimination at zero stocks. Added team/zone presentation, objective-aware bots, and mode-aware replay/network/scene behavior.
+- Bumped the replay format to v3 for the current mode/state schema. v3 rejects v1 and v2 recordings; no migration or compatibility shim is provided, so older recordings do not load.
+- `tools/test.sh` passed all 17 suites. The rendered focused-window control scene passed mode selection, 4v4 bot capture, zero-stock respawn input, natural team winner/rematch and default FFA. The real host/two-client/Air-bot control ENet run passed under 100 ms one-way latency, 10 ms jitter and 5% loss; peers agreed on terminal state and rematch reset, and the host replay matched. Inspected and accepted `docs/shots/m6/control_setup.png`, `control_capture.png`, and `control_winner.png`.
+- Some headless smoke exits reported ObjectDB shutdown warnings, and some ENet packets triggered MTU-fragmentation warnings; no script errors were reported in the observed passing gates.
+- Also passed the rendered native-input smoke (all nine actions plus pitch, entities and replay) and baseline three-peer FFA ENet regression. The final full-kit network gate is the only remaining M6 verification item.
+
 ## v0.3 M5 — Per-move tuning and developer tools
 
 - Added sparse element → move → numeric-field `KIT_OVERRIDES` with scalar/per-kit base precedence, typed preset/replay/host settings persistence, and searchable lazy-built per-element/per-move F1 sections. The editor exposes active simulation fields while omitting inert values; `active` is cast-lock time, not physical dash duration.
@@ -7,14 +15,12 @@
 - Added offline C kit cycling with a new replay segment, V's timed projectile-firing dummy, and B's view-only fixed-tick curve-shot preview from current aim/strafe (also viewable online). Verified dummy hits/wall blocks, cleanup/replay behavior, preview path, HUD cooldown invalidation and active/windup shove pose.
 - Verified all 14 headless suites, offline scene smoke, rendered nine-action input/replay smoke, F1 tuning/persistence/client-edit guard smoke, dev smoke, three preset World checks, and a clean rendered UI smoke. Inspected and accepted `docs/shots/m5/tuning_element.png`, `dummy.png` and `trajectory.png`.
 - The impaired three-peer full-kit ENet run used 100 ms one-way latency, 10 ms jitter and 5% loss; it represented all four elements and exercised all nine move slots with physical outcomes. Both clients passed projectile interpolation checks, and the host replay matched exactly after live tuning. Settings/full-start payloads measured 81,396/85,152 bytes within the 131,072-byte bound. Coverage represents all nine slots plus all four elements, not every element/slot combination.
-- M6's three-lane control-point mode remains unimplemented.
 
 ## v0.3 M4 — Kit-aware bots
 
 - Updated deterministic caller-owned BotSim behavior to lead target movement, route curve shots around obstructing walls, defend against projectiles with skill-gated shove deflection or walls, slam grounded opponents, and recover/steer safely near edges using shared Source movement.
 - Randomized bot kit assignments for offline match start, offline F3 additions, and host-filled online rosters before recording; capture mode seeds the offline roster RNG from participant IDs, and rematches retain assigned elements. The F3 input/dev-action smoke passed, confirming the new element in the initial tape while preserving the selected human element.
 - After the F3 RNG callsite repair, all 13 headless suites passed (exit 0). Offline scene smoke, natural bot combat smoke (32 frames, nine move activation events, eight projectiles, one hit and one wall block, no runtime errors), roster/capture/rematch lifecycle and impaired three-peer ENet match/rematch also passed. M4's network run covered match flow only; full-kit move acceptance was added and verified in M5. One ObjectDB shutdown warning reported six instances in bot combat and seven in the roster throwaway run.
-- M5 subsequently completed per-move/per-element tuning, developer tools and full-kit network acceptance; see the M5 entry above. M6 remains unimplemented.
 
 ## v0.3 M3 — Kits, abilities and projectiles
 

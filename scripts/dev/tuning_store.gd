@@ -58,6 +58,29 @@ static func bounds(name: String, value: Variant) -> Vector2:
 		return Vector2(1.0, 512.0)
 	if name == "NET_CONNECT_TIMEOUT":
 		return Vector2(0.1, 60.0)
+	if name == "CP_LANE_OFFSET":
+		return Vector2(0.001, 1000.0)
+	if name == "CP_ZONE_RADIUS":
+		return Vector2(0.001, 1000.0)
+	if name == "CP_CAPTURE_TIME":
+		return Vector2(0.001, 3600.0)
+	if name == "CP_CAPTURE_HEIGHT":
+		return Vector2(0.0, 1000.0)
+	if name == "CP_SCORE_RATE":
+		return Vector2(0.0, 1000000.0)
+	if name == "CP_SCORE_TARGET":
+		return Vector2(0.001, 1000000000.0)
+	if name == "CP_KB_BONUS":
+		return Vector2(1.0, 100.0)
+	if name == "CP_RINGOUT_PENALTY":
+		return Vector2(0.0, 1000000.0)
+	if name == "CP_RESPAWN_DELAY":
+		return Vector2(0.0, 60.0)
+	if name == "BOT_CONTROL_ZONE_MARGIN":
+		return Vector2(0.0, 1000.0)
+	if name == "BOT_CONTROL_CENTER_RADIUS":
+		return Vector2(0.001, 1000.0)
+
 	if name.contains("PITCH") or name.contains("YAW") or name == "KILL_PLANE":
 		low = -maxf(high, 180.0)
 	if name.contains("VOLUME") or name.contains("SKILL") or name.contains("CONTROL") or name.ends_with("_DENSITY"):
@@ -234,6 +257,17 @@ static func decode(values: Dictionary) -> Dictionary:
 				return {}
 		if name == "HUD_REFERENCE_SIZE" and (value.x <= 0.0 or value.y <= 0.0):
 			push_warning("HUD reference size must be positive")
+			return {}
+		if name == "CP_TEAM_COLORS":
+			if not value is Array or value.size() != 2:
+				push_warning("Control mode requires exactly two team colors")
+				return {}
+			for team_color: Variant in value:
+				if not team_color is Color or team_color.r < 0.0 or team_color.r > 1.0 or team_color.g < 0.0 or team_color.g > 1.0 or team_color.b < 0.0 or team_color.b > 1.0 or team_color.a < 0.0 or team_color.a > 1.0:
+					push_warning("Control team colors must be bounded colors")
+					return {}
+		if name.begins_with("CP_") and name != "CP_TEAM_COLORS" and (not (value is int or value is float) or not _finite_number(value)):
+			push_warning("Invalid control tuning field: %s" % name)
 			return {}
 		result[name] = value
 	var merged := snapshot()

@@ -3,8 +3,10 @@
 
 Headless regression (one host and two clients):
     python3 tools/net_test.py --godot /path/to/godot
-Full-kit network regression (same real host/two-client, latency and loss fixture):
+Full-kit regression preserves the nine-move/tuning-patch/replay proof:
     python3 tools/net_test.py --godot /path/to/godot --scenario=full-kit
+Control-point regression runs four participants, a real ringout/respawn, and rematch:
+    python3 tools/net_test.py --godot /path/to/godot --scenario=control
 Two rendered peers, optional live viewport captures:
     python3 tools/net_test.py --godot /path/to/godot --gui --capture-dir /tmp/shove-net-captures
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -46,8 +49,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--result-dir", type=Path, help="empty artifact directory outside the repository (default: new /tmp directory)")
     parser.add_argument("--gui", action="store_true", help="two real rendered windows instead of three headless peers")
     parser.add_argument("--expected-clients", type=int, help="client process count (default: 2 headless, 1 GUI)")
-    parser.add_argument("--scenario", choices=("baseline", "full-kit"), default="baseline",
-                        help="full-kit scripts successful moves over real ENet before the natural match ends")
+    parser.add_argument("--scenario", choices=("baseline", "full-kit", "control"), default="baseline",
+                        help="full-kit exercises live kits/replay; control checks capture victory, command-driven zero-stock respawn and penalty")
     parser.add_argument("--capture-dir", type=Path, help="save each rendered peer's live lobby/playing/KO/winner/rematch PNGs outside the repo")
     parser.add_argument("--hold-seconds", type=float, default=3.0, help="GUI lobby, winner and rematch review hold (default: 3 seconds)")
     args = parser.parse_args()
@@ -55,8 +58,8 @@ def arguments() -> argparse.Namespace:
         args.expected_clients = 1 if args.gui else 2
     if not 1 <= args.expected_clients <= 7:
         parser.error("--expected-clients must be between 1 and 7")
-    if args.scenario == "full-kit" and args.expected_clients != 2:
-        parser.error("--scenario=full-kit requires the real host plus two clients")
+    if args.scenario in ("full-kit", "control") and args.expected_clients != 2:
+        parser.error(f"--scenario={args.scenario} requires the real host plus two clients")
     if args.gui and args.expected_clients != 1:
         parser.error("--gui is the reusable two-window run; use --expected-clients=1")
     if args.capture_dir and not args.gui:
@@ -112,14 +115,42 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
     baseline = results[0].get("terminal", {})
     if not baseline or baseline.get("epoch") != 1:
         raise RunFailure(f"Host did not preserve the complete first match: {baseline}")
-    expected_players = args.expected_clients + 1 + (1 if args.scenario == "full-kit" else 0)
+    control_mode = args.scenario == "control"
+    extra_bot = args.scenario in ("full-kit", "control")
+    expected_players = args.expected_clients + 1 + (1 if extra_bot else 0)
     stocks = baseline.get("stocks", {})
     if len(stocks) != expected_players:
         raise RunFailure(f"Terminal stock table must contain {expected_players} match participants: {stocks}")
-    live = [int(player) for player, stock in stocks.items() if stock > 0]
-    if len(live) != 1 or baseline.get("winner") != live[0]:
-        raise RunFailure(f"Match must reach a natural, unambiguous winner: {baseline}")
+    if control_mode:
+        scores = baseline.get("scores", [])
+        teams = baseline.get("teams", {})
+        winner = baseline.get("winner")
+        if type(winner) is not int or winner not in (0, 1) or baseline.get("mode") != "control" or len(scores) != 2 or not all(isinstance(score, (int, float)) and 0 <= score <= 2_000_000_000 for score in scores) or scores[winner] < 8.0:
+            raise RunFailure(f"Control match did not reach its natural target-score victory: {baseline}")
+        if set(teams) != set(stocks) or set(teams.values()) != {0, 1} or any(type(team) is not int or team not in (0, 1) for team in teams.values()):
+            raise RunFailure(f"Control terminal state lacks complete two-team membership: {baseline}")
+        respawns = baseline.get("respawns", {})
+        if set(respawns) != set(stocks) or any(not isinstance(value, (int, float)) or not 0.0 <= value <= 60.0 for value in respawns.values()):
+            raise RunFailure(f"Control terminal state lacks bounded respawn timers for every participant: {baseline}")
+        zones = baseline.get("zones", [])
+        if len(zones) != 2 or any(
+            not isinstance(zone, dict) or set(zone) != {"position", "radius", "owner", "capturing", "progress"}
+            or not isinstance(zone["position"], list) or len(zone["position"]) != 3
+            or any(type(component) not in (int, float) or not math.isfinite(float(component)) or abs(component) > 10000 for component in zone["position"])
+            or type(zone["radius"]) not in (int, float) or not math.isfinite(float(zone["radius"])) or not 0 < zone["radius"] <= 1000
+            or type(zone["owner"]) is not int or zone["owner"] not in (-1, 0, 1)
+            or type(zone["capturing"]) is not int or zone["capturing"] not in (-1, 0, 1)
+            or type(zone["progress"]) not in (int, float) or not math.isfinite(float(zone["progress"])) or not 0 <= zone["progress"] <= 1
+            for zone in zones
+        ) or sum(zone.get("owner") == winner for zone in zones) != 2:
+            raise RunFailure(f"Target-score victory lacks complete valid owned zone state: {baseline}")
+    else:
+        live = [int(player) for player, stock in stocks.items() if stock > 0]
+        if len(live) != 1 or baseline.get("winner") != live[0]:
+            raise RunFailure(f"Match must reach a natural, unambiguous FFA winner: {baseline}")
+
     ids: set[int] = set()
+    control_actor = results[0].get("control_respawn", {}).get("actor") if control_mode else None
     for peer, result in zip(peers, results):
         name = peer["name"]
         if not result.get("ok"):
@@ -131,7 +162,8 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
             raise RunFailure(f"Missing/duplicate real ENet peer identity for {name}: {local_id}")
         ids.add(local_id)
         terminal = result.get("terminal", {})
-        if any(terminal.get(field) != baseline.get(field) for field in ("epoch", "winner", "stocks")):
+        compared_fields = ("epoch", "winner", "stocks", "mode", "teams", "respawns", "scores", "zones") if control_mode else ("epoch", "winner", "stocks")
+        if any(terminal.get(field) != baseline.get(field) for field in compared_fields):
             raise RunFailure(f"Authoritative terminal mismatch for {name}: host={baseline}, peer={terminal}")
         if terminal.get("tick", -1) <= 0:
             raise RunFailure(f"{name} did not observe a naturally advanced World: {terminal}")
@@ -166,8 +198,23 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
             raise RunFailure(f"{name} did not receive complete element/cooldown/projectile/wall snapshots")
         if args.scenario == "full-kit" and peer["role"] == "client" and result.get("interpolated_projectiles", 0) <= 0:
             raise RunFailure(f"{name} did not demonstrate projectile interpolation between buffered endpoints")
-        if result.get("world_updates", 0) <= 0 or result.get("ko_events", 0) <= 0:
-            raise RunFailure(f"{name} did not observe real world updates and authoritative KO events")
+        if control_mode:
+            proof = result.get("control_respawn", {})
+            proof_actor = proof.get("actor")
+            if not isinstance(proof_actor, int) or str(proof_actor) not in stocks or proof_actor != control_actor or proof.get("team") != baseline.get("teams", {}).get(str(proof_actor)):
+                raise RunFailure(f"{name} did not identify the same real control ringout participant/team: {proof}")
+            required_observations = ("ko_event", "walked_off_edge", "fell_below_plane", "timer_seen", "inactive_hidden_seen", "reactivated_seen", "post_respawn_movement_seen", "team_penalty_seen")
+            if any(not proof.get(field) for field in required_observations):
+                raise RunFailure(f"{name} did not replicate the real control KO, delayed hidden inactivity, physical post-respawn movement, and score penalty: {proof}")
+            if proof.get("score_before", 0) <= 2.0 or proof.get("score_before", 0) - proof.get("score_after", 0) < 1.5:
+                raise RunFailure(f"{name} did not observe the tunable ringout penalty applied to earned team score: {proof}")
+            if peer["role"] == "client" and result.get("local_id") == proof.get("actor"):
+                if proof.get("command_movement_commands", 0) <= 0 or proof.get("post_respawn_moving_commands", 0) <= 0:
+                    raise RunFailure(f"{name} did not drive the ringout and send movement after respawning at zero stocks: {proof}")
+        if not control_mode and result.get("ko_events", 0) <= 0:
+            raise RunFailure(f"{name} did not observe authoritative KO events")
+        if control_mode and peer["name"] == "server" and not result.get("replay_verified"):
+            raise RunFailure("Host control replay diverged from the exact final authoritative World")
         if peer["role"] == "client" and result.get("peak_snapshot_rate", 0) <= 0:
             raise RunFailure(f"{name} has no evidence of received network snapshots")
         rematch = result.get("rematch", {})
@@ -176,6 +223,12 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
         reset_stocks = rematch.get("stocks", {})
         if set(reset_stocks) != set(stocks) or any(stock != 1 for stock in reset_stocks.values()):
             raise RunFailure(f"{name}'s rematch failed to reset all peers' stocks: {reset_stocks}")
+        if control_mode:
+            if rematch.get("mode") != "control" or rematch.get("teams") != baseline.get("teams") or rematch.get("scores") != [0, 0]:
+                raise RunFailure(f"{name}'s control rematch did not preserve teams and clear scores: {rematch}")
+            rematch_respawns = rematch.get("respawns", {})
+            if set(rematch_respawns) != set(stocks) or any(timer != 0.0 for timer in rematch_respawns.values()):
+                raise RunFailure(f"{name}'s control rematch did not reset every respawn timer: {rematch}")
         if args.capture_dir:
             captures = result.get("captures", {})
             for stage in CAPTURE_STAGES:
@@ -185,8 +238,8 @@ def validate_results(peers: list[dict[str, Any]], args: argparse.Namespace, resu
                     raise RunFailure(f"{name} lacks a live {stage} PNG capture: {path}")
     if sum(result.get("dropped", 0) for result in results) <= 0:
         raise RunFailure("No actual simulated packet drops were reported")
-    if sum(result.get("shove_commands", 0) for result in results) <= 0:
-        raise RunFailure("No peer produced a normal shove command during the natural match")
+    if not control_mode and sum(result.get("shove_commands", 0) for result in results) <= 0:
+        raise RunFailure("No peer produced a normal shove command during the natural FFA match")
     return results
 
 
@@ -236,7 +289,11 @@ def run(args: argparse.Namespace) -> int:
             command += ["--gui", f"--hold-seconds={args.hold_seconds}"]
         if args.capture_dir:
             command.append(f"--capture-dir={args.capture_dir}")
-        process = subprocess.Popen(command, cwd=PROJECT, stdout=handle, stderr=subprocess.STDOUT)
+        environment = os.environ.copy()
+        xdg_data = result_dir / "xdg-data" / name
+        xdg_data.mkdir(parents=True, exist_ok=True)
+        environment["XDG_DATA_HOME"] = str(xdg_data)
+        process = subprocess.Popen(command, cwd=PROJECT, env=environment, stdout=handle, stderr=subprocess.STDOUT)
         peers.append({"name": name, "role": role, "process": process, "log_path": log_path, "command": command})
 
     try:

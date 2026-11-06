@@ -58,6 +58,23 @@ var _full_start_payload_bytes := 0
 var _replicated_worlds := 0
 var _interpolated_projectiles := 0
 var _last_projectile_positions: Dictionary = {}
+var _ringout_actor_id: int = -1
+var _ringout_actor_team: int = -1
+var _ringout_probe_started: bool = false
+var _ringout_commanding: bool = false
+var _ringout_move_commands: int = 0
+var _ringout_ko_seen: bool = false
+var _respawn_timer_seen: bool = false
+var _inactive_hidden_seen: bool = false
+var _respawn_reactivated_seen: bool = false
+var _team_penalty_seen: bool = false
+var _ringout_score_before: float = -1.0
+var _ringout_score_after: float = -1.0
+var _ringout_fell_below_plane: bool = false
+var _ringout_walked_off_edge: bool = false
+var _post_respawn_moving_commands: int = 0
+var _post_respawn_movement_seen: bool = false
+var _control_previous_scores: Array[float] = [-1.0, -1.0]
 
 func _initialize() -> void:
 	_run.call_deferred()
@@ -93,6 +110,8 @@ func _run() -> void:
 			"SPAWN_RADIUS": 1.3, "CENTER_SIZE": 5.0, "BASE_KB": 1.0,
 			"SHOVE_DAMAGE": 1.0, "KB_SCALE": 0.01, "KB_UP": 1.0, "KILL_PLANE": -20.0,
 		}, true)
+	elif _scenario == "control":
+		fixture.merge({"PLATFORM_SIZE": 40.0, "CP_CAPTURE_TIME": 0.5, "CP_SCORE_RATE": 1.0, "CP_SCORE_TARGET": 8.0, "CP_RINGOUT_PENALTY": 2.0, "CP_RESPAWN_DELAY": 1.0}, true)
 	for field: String in fixture:
 		Tuning.set(field, fixture[field])
 	if _scenario == "full-kit":
@@ -129,7 +148,9 @@ func _run() -> void:
 		_fail("%s failed: %s" % [_role, error_string(error)])
 		return
 	if _role == "server":
-		_network.set_bot_fill(1 if _scenario == "full-kit" else 0)
+		_network.set_bot_fill(1 if _scenario in ["full-kit", "control"] else 0)
+		if _scenario == "control":
+			_network.set_mode("control")
 		if _scenario == "full-kit":
 			_network.members[-2].element = "air"
 			_network._broadcast_lobby()
@@ -142,6 +163,7 @@ func _run() -> void:
 				_network.members, not _terminal.is_empty(), not _rematch.is_empty()])
 			return
 		_observe_stats()
+		_observe_control_respawn()
 		if not _ready_sent and _network.connected and _network.members.has(_network.local_id):
 			_network.set_ready(true)
 			_ready_sent = true
@@ -187,10 +209,142 @@ func _run() -> void:
 			quit(0)
 			return
 
+func _control_ringout_command() -> Dictionary:
+	if _scenario != "control" or _role != "client" or _network.authoritative_world.is_empty():
+		return {}
+	_sync_control_ringout_actor()
+	if _ringout_actor_id != _network.local_id:
+		return {}
+	var authority: Dictionary = _network.authoritative_world
+	if str(authority.get("mode", "ffa")) != "control" or not authority.get("players", {}).has(_network.local_id):
+		return {}
+	var player: Dictionary = authority.players[_network.local_id]
+	if _ringout_commanding:
+		if int(player.get("stocks", 1)) <= 0 or float(player.get("respawn_remaining", 0.0)) > 0.0:
+			_ringout_commanding = false
+			return {"handled": true, "command": InputCmd.new()}
+	else:
+		if _ringout_probe_started or int(player.get("stocks", 1)) <= 0:
+			return {}
+		var team: int = int(player.get("team", -1))
+		if team < 0 or team > 1:
+			return {}
+		_ringout_probe_started = true
+		_ringout_commanding = true
+		_ringout_actor_id = _network.local_id
+		_ringout_actor_team = team
+	var yaw: float = PI * 0.5 if _ringout_actor_team == 0 else -PI * 0.5
+	var command: InputCmd = InputCmd.new(Vector2(0.0, -1.0), false, false, yaw)
+	_ringout_move_commands += 1
+	return {"handled": true, "command": command}
+
+func _observe_control_respawn() -> void:
+	if _scenario != "control" or _network.epoch != 1 or _network.authoritative_world.is_empty():
+		return
+	var authority: Dictionary = _network.authoritative_world
+	if str(authority.get("mode", "ffa")) != "control" or not authority.get("control", {}).get("scores", []) is Array:
+		return
+	var scores: Array = authority.control.scores
+	if scores.size() != 2:
+		return
+	_coordinate_control_ringout_actor(authority, scores)
+	if _ringout_actor_id < 0:
+		_sync_control_ringout_actor()
+	if _ringout_actor_id >= 0 and authority.players.has(_ringout_actor_id):
+		var player: Dictionary = authority.players[_ringout_actor_id]
+		var timer: float = float(player.get("respawn_remaining", 0.0))
+		if int(player.get("stocks", 1)) == 0 and timer > 0.0:
+			_respawn_timer_seen = true
+			var view_hidden: bool = false
+			var views: Variant = _app.get("player_views")
+			if views is Dictionary and views.has(_ringout_actor_id):
+				var player_view: Variant = views[_ringout_actor_id]
+				view_hidden = player_view is Node3D and not player_view.visible
+			_inactive_hidden_seen = _inactive_hidden_seen or (
+				not WorldSim.is_player_active(player)
+				and player.position.y < float(Tuning.KILL_PLANE)
+				and view_hidden
+			)
+			if _ringout_actor_team >= 0 and _ringout_actor_team <= 1:
+				if _ringout_score_before < 0.0:
+					_ringout_score_before = _control_previous_scores[_ringout_actor_team]
+				if _ringout_score_after < 0.0:
+					_ringout_score_after = float(scores[_ringout_actor_team])
+				var penalty: float = float(Tuning.CP_RINGOUT_PENALTY)
+				var tolerance: float = maxf(0.5, float(Tuning.CP_SCORE_RATE) * 0.2)
+				if _ringout_score_before > penalty and _ringout_score_before - _ringout_score_after >= penalty - tolerance:
+					_team_penalty_seen = true
+		elif _respawn_timer_seen and timer <= 0.0:
+			var views: Variant = _app.get("player_views")
+			var visible: bool = false
+			if views is Dictionary and views.has(_ringout_actor_id):
+				var player_view: Variant = views[_ringout_actor_id]
+				visible = player_view is Node3D and player_view.visible
+			_respawn_reactivated_seen = (
+				WorldSim.is_player_active(player)
+				and player.position.distance_to(player.spawn) <= 0.001
+				and visible
+			) or _respawn_reactivated_seen
+		if (
+			_respawn_reactivated_seen
+			and int(player.get("stocks", 1)) == 0
+			and timer <= 0.0
+			and WorldSim.is_player_active(player)
+		):
+			var displacement: Vector2 = Vector2(player.position.x - player.spawn.x, player.position.z - player.spawn.z)
+			var horizontal_velocity: Vector2 = Vector2(player.velocity.x, player.velocity.z)
+			var displacement_threshold: float = maxf(0.001, float(Tuning.BODY_RADIUS) * 0.1)
+			var velocity_threshold: float = maxf(0.001, float(Tuning.BODY_RADIUS) * 0.05)
+			_post_respawn_movement_seen = (
+				displacement.length() >= displacement_threshold
+				and horizontal_velocity.length() >= velocity_threshold
+			) or _post_respawn_movement_seen
+	_control_previous_scores[0] = float(scores[0])
+	_control_previous_scores[1] = float(scores[1])
+
+func _coordinate_control_ringout_actor(authority: Dictionary, scores: Array) -> void:
+	if _role != "server" or _ringout_actor_id >= 0:
+		return
+	var team: int = 0 if float(scores[0]) >= float(scores[1]) else 1
+	if float(scores[team]) < 2.5 or float(scores[team]) < float(scores[1 - team]) + 0.5:
+		return
+	var candidates: Array[int] = []
+	for id: Variant in authority.get("players", {}):
+		var player: Dictionary = authority.players[id]
+		var member: Dictionary = _network.members.get(id, {})
+		var member_name: String = str(member.get("name", ""))
+		if member_name.begins_with("client") and int(player.get("team", -1)) == team and int(player.get("stocks", 1)) > 0:
+			candidates.append(int(id))
+	candidates.sort()
+	if candidates.is_empty():
+		return
+	_ringout_actor_id = candidates[0]
+	_ringout_actor_team = team
+	_write_json("control-ringout-actor.json", {"actor": _ringout_actor_id, "team": team})
+
+
+func _sync_control_ringout_actor() -> void:
+	var path: String = _result_dir.path_join("control-ringout-actor.json")
+	if _ringout_actor_id >= 0 or not FileAccess.file_exists(path):
+		return
+	var value: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if value is Dictionary:
+		var actor: int = int(value.get("actor", -1))
+		var team: int = int(value.get("team", -1))
+		if actor >= 0 and team in [0, 1]:
+			_ringout_actor_id = actor
+			_ringout_actor_team = team
 
 func _bot_command() -> InputCmd:
 	if _network.world.is_empty() or not _network.world.has("players"):
 		return InputCmd.new()
+	var ringout: Dictionary = _control_ringout_command()
+	if bool(ringout.get("handled", false)):
+		var directed: InputCmd = ringout.get("command", InputCmd.new())
+		_commands += 1
+		if directed.move.length_squared() > 0.0:
+			_moving_commands += 1
+		return directed
 	if _scenario == "full-kit" and _kit_index < _kit_slots.size():
 		if _peer_name == "client2":
 			if _kit_index in [3, 4, 5, 6, 7, 8] and not _deflect_done:
@@ -228,16 +382,22 @@ func _bot_command() -> InputCmd:
 				_recovery_jump_released = false
 				return InputCmd.new()
 			var target_id := _named_player_id("client2") if slot == "shove" or (_kit_index >= 4 and not _deflect_done) else _nearest_target(actor_id)
+			if slot == "h_dash":
+				target_id = _nearest_active_target(actor_id)
 			var yaw := 0.0
 			if target_id >= 0:
 				var offset: Vector3 = _network.world.players[target_id].position - actor.position
 				yaw = atan2(-offset.x, -offset.z)
-			var scripted := InputCmd.new(Vector2.ZERO, slot == "recovery" and airborne, slot == "shove" or (_kit_index >= 4 and not _deflect_done), yaw)
+			var jump := slot == "recovery" and airborne
+			if slot == "h_dash" and not airborne:
+				jump = true
+			var scripted := InputCmd.new(Vector2.ZERO, jump, slot == "shove" or (_kit_index >= 4 and not _deflect_done), yaw)
 			scripted.moves = int(_kit_flags.get(slot, 0))
 			if slot in ["basic_shot", "curve_shot", "quick_fire"]:
 				scripted.pitch = 0.8
 			_commands += 1
 			return scripted
+
 		if _role == "server":
 			_commands += 1
 			return InputCmd.new()
@@ -249,6 +409,10 @@ func _bot_command() -> InputCmd:
 		_moving_commands += 1
 	if command.shove:
 		_shove_commands += 1
+	if _scenario == "control" and _network.local_id == _ringout_actor_id and _respawn_reactivated_seen and _network.world.players.has(_ringout_actor_id):
+		var reactivated_player: Dictionary = _network.world.players[_ringout_actor_id]
+		if int(reactivated_player.get("stocks", 1)) == 0 and float(reactivated_player.get("respawn_remaining", 0.0)) <= 0.0 and WorldSim.is_player_active(reactivated_player) and command.move.length_squared() > 0.0:
+			_post_respawn_moving_commands += 1
 	return command
 
 func _kit_actor_id() -> int:
@@ -271,10 +435,28 @@ func _nearest_target(actor_id: int) -> int:
 			best_distance = distance
 			best_id = id
 	return best_id
+func _nearest_active_target(actor_id: int) -> int:
+	var best_id := -1
+	var best_distance := INF
+	if not _network.world.players.has(actor_id):
+		return best_id
+	var actor: Dictionary = _network.world.players[actor_id]
+	for id: int in _network.world.players:
+		if id == actor_id:
+			continue
+		var target: Dictionary = _network.world.players[id]
+		if not WorldSim.is_player_active(target) or not WorldSim.are_enemies(actor, target):
+			continue
+		var distance: float = actor.position.distance_squared_to(target.position)
+		if distance < best_distance:
+			best_distance = distance
+			best_id = id
+	return best_id
+
 
 
 func _all_ready() -> bool:
-	if not _network.connected or _network.members.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0):
+	if not _network.connected or _network.members.size() != _expected_clients + 1 + (1 if _scenario in ["full-kit", "control"] else 0):
 		return false
 	for member: Dictionary in _network.members.values():
 		if not bool(member.get("ready", false)):
@@ -343,11 +525,20 @@ func _check_interpolation_midpoint() -> bool:
 func _on_authoritative_events(events: Array, event_world: Dictionary) -> void:
 	if _network.epoch != 1:
 		return
-	var actor_id := _kit_actor_id()
+	var actor_id: int = _kit_actor_id()
 	for event: Dictionary in events:
 		if event.get("type", "") == "ko":
 			_ko_events += 1
 			_queue_capture("ko")
+			if _scenario == "control":
+				var ko_player: int = int(event.get("player", -1))
+				if ko_player == _ringout_actor_id:
+					_ringout_ko_seen = true
+					var event_player: Dictionary = event_world.get("players", {}).get(ko_player, {})
+					_ringout_fell_below_plane = event_player.get("position", Vector3.ZERO).y < float(Tuning.KILL_PLANE)
+					var ko_position: Variant = event.get("position", Vector3.ZERO)
+					var outward_sign: float = -1.0 if _ringout_actor_team == 0 else 1.0
+					_ringout_walked_off_edge = ko_position is Vector3 and float(ko_position.x) * outward_sign > float(Tuning.PLATFORM_SIZE) * 0.5
 		if event.get("type", "") == "deflect" and int(event.get("player", -1)) == actor_id:
 			_kit_outcomes.deflects += 1
 			_deflect_done = true
@@ -431,22 +622,68 @@ func _stocks(world: Dictionary) -> Dictionary:
 func _record_terminal() -> void:
 	var world: Dictionary = _network.authoritative_world
 	var stocks: Dictionary = _stocks(world)
-	var winner: int = int(_network.flow.get("winner", -1))
-	var live: Array = []
-	for id: String in stocks:
-		if int(stocks[id]) > 0:
-			live.append(int(id))
-	if stocks.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0) or live.size() != 1 or winner != int(live[0]):
-		_fail("Expected one natural winner and every real peer in authoritative terminal world: winner=%d stocks=%s" % [winner, stocks])
+	var expected_players: int = _expected_clients + 1 + (1 if _scenario in ["full-kit", "control"] else 0)
+	if stocks.size() != expected_players:
+		_fail("Terminal state lost a match participant: " + str(stocks))
 		return
-	_terminal = {"epoch": _network.epoch, "tick": int(world.get("tick", -1)), "winner": winner, "stocks": stocks}
+	var control_mode: bool = _scenario == "control"
+	if str(world.get("mode", "ffa")) != ("control" if control_mode else "ffa"):
+		_fail("Terminal match mode differs from the selected lobby mode")
+		return
+	var winner: int = int(_network.flow.get("winner_team", -1)) if control_mode else int(_network.flow.get("winner", -1))
+	if control_mode:
+		if winner < 0 or winner > 1 or float(world.control.scores[winner]) < float(Tuning.CP_SCORE_TARGET):
+			_fail("Control match ended without a natural target-score winner: winner=%d control=%s" % [winner, world.control])
+			return
+	else:
+		var live: Array = []
+		for id: String in stocks:
+			if int(stocks[id]) > 0:
+				live.append(int(id))
+		if live.size() != 1 or winner != int(live[0]):
+			_fail("Expected one natural winner in FFA terminal state: winner=%d stocks=%s" % [winner, stocks])
+			return
+	_terminal = {
+		"epoch": _network.epoch, "tick": int(world.get("tick", -1)), "winner": winner,
+		"stocks": stocks, "mode": str(world.get("mode", "ffa")),
+		"teams": _teams(world), "respawns": _respawns(world),
+		"scores": world.get("control", {}).get("scores", []),
+		"zones": _zones(world),
+	}
 	_winner_at = _now()
 	_queue_capture("winner")
 	_write_json(_peer_name + ".terminal.json", _terminal)
-	if _scenario == "full-kit" and _role == "server":
+	if _scenario in ["full-kit", "control"] and _role == "server":
 		_replay_verified = _verify_recording()
 		if not _replay_verified:
-			_fail("Host replay diverged after the live KIT_OVERRIDES patch")
+			_fail("Host replay diverged after live match state/tuning patches")
+
+func _teams(world_value: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for id: int in world_value.get("players", {}):
+		result[str(id)] = int(world_value.players[id].get("team", -1))
+	return result
+func _respawns(world_value: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for id: int in world_value.get("players", {}):
+		result[str(id)] = float(world_value.players[id].get("respawn_remaining", 0.0))
+	return result
+func _zones(world_value: Dictionary) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var control: Dictionary = world_value.get("control", {})
+	for zone_value: Variant in control.get("zones", []):
+		if not zone_value is Dictionary:
+			continue
+		var zone: Dictionary = zone_value
+		var position: Vector3 = zone.get("position", Vector3.ZERO)
+		result.append({
+			"position": [float(position.x), float(position.y), float(position.z)],
+			"radius": float(zone.get("radius", 0.0)),
+			"owner": int(zone.get("owner", -1)),
+			"capturing": int(zone.get("capturing", -1)),
+			"progress": float(zone.get("progress", 0.0)),
+		})
+	return result
 
 func _verify_recording() -> bool:
 	var tape = _network.recording
@@ -456,7 +693,7 @@ func _verify_recording() -> bool:
 	for frame: Dictionary in tape.frames:
 		if frame.settings.has("KIT_OVERRIDES"):
 			patch_seen = true
-	if not patch_seen:
+	if _scenario == "full-kit" and not patch_seen:
 		return false
 	var restore: Dictionary = TuningCodec.snapshot()
 	TuningCodec.apply(tape.settings)
@@ -477,14 +714,28 @@ func _record_rematch() -> void:
 		return
 	var world: Dictionary = _network.authoritative_world
 	var stocks: Dictionary = _stocks(world)
-	if stocks.size() != _expected_clients + 1 + (1 if _scenario == "full-kit" else 0):
+	if stocks.size() != _expected_clients + 1 + (1 if _scenario in ["full-kit", "control"] else 0):
 		_fail("Rematch lost a real peer: " + str(stocks))
 		return
 	for stock: int in stocks.values():
 		if stock != int(Tuning.STOCKS):
 			_fail("Rematch did not reset authoritative stocks: " + str(stocks))
 			return
-	_rematch = {"epoch": _network.epoch, "phase": str(_network.flow.phase), "stocks": stocks, "tick": int(world.get("tick", -1))}
+	var control: Dictionary = world.get("control", {})
+	if _scenario == "control":
+		if control.get("scores", []) != [0.0, 0.0] or control.get("winner_team", -1) != -1 or control.get("zones", []).size() != 2:
+			_fail("Control rematch did not reset scores and winner: " + str(control))
+			return
+		for zone: Dictionary in control.zones:
+			if int(zone.owner) != -1 or int(zone.capturing) != -1 or float(zone.progress) != 0.0:
+				_fail("Control rematch retained a capture: " + str(control.zones))
+				return
+	_rematch = {
+		"epoch": _network.epoch, "phase": str(_network.flow.phase), "stocks": stocks,
+		"tick": int(world.get("tick", -1)), "mode": str(world.get("mode", "ffa")),
+		"teams": _teams(world), "respawns": _respawns(world), "scores": control.get("scores", []),
+		"zones": _zones(world),
+	}
 	_rematch_at = _now()
 	_memory.clear()
 	_queue_capture("rematch")
@@ -511,7 +762,7 @@ func _measure_legal_settings_bytes() -> int:
 func _measure_full_start_payload_bytes() -> int:
 	var maximum_settings: Dictionary = TuningCodec.snapshot()
 	maximum_settings["KIT_OVERRIDES"] = _max_legal_overrides()
-	var world_value: Dictionary = WorldSim.create(_network.members.keys())
+	var world_value: Dictionary = WorldSim.create(_network.members.keys(), "control" if _scenario == "control" else "ffa")
 	for id: int in _network.members:
 		WorldSim.set_element(world_value, id, str(_network.members[id].get("element", "earth")))
 	var start_flow: Dictionary = MatchFlowSim.create()
@@ -519,6 +770,7 @@ func _measure_full_start_payload_bytes() -> int:
 	var payload := {
 		"epoch": _network.epoch + 1, "world": world_value, "flow": start_flow,
 		"settings": TuningCodec.encode(maximum_settings), "members": _network.members,
+		"mode": "control" if _scenario == "control" else "ffa",
 	}
 	return var_to_bytes(payload).size()
 func _reliable_raw_limit() -> int:
@@ -563,6 +815,18 @@ func _result() -> Dictionary:
 		"reliable_raw_limit": _reliable_raw_limit(),
 		"replicated_worlds": _replicated_worlds,
 		"interpolated_projectiles": _interpolated_projectiles,
+		"control_respawn": {
+			"actor": _ringout_actor_id, "team": _ringout_actor_team,
+			"command_movement_commands": _ringout_move_commands,
+			"ko_event": _ringout_ko_seen, "fell_below_plane": _ringout_fell_below_plane,
+			"timer_seen": _respawn_timer_seen, "inactive_hidden_seen": _inactive_hidden_seen,
+			"reactivated_seen": _respawn_reactivated_seen,
+			"team_penalty_seen": _team_penalty_seen,
+			"score_before": _ringout_score_before, "score_after": _ringout_score_after,
+			"post_respawn_moving_commands": _post_respawn_moving_commands,
+			"walked_off_edge": _ringout_walked_off_edge,
+			"post_respawn_movement_seen": _post_respawn_movement_seen,
+		},
 	}
 
 
@@ -653,6 +917,12 @@ func _parse_arguments() -> bool:
 			_hold_seconds = argument.trim_prefix("--hold-seconds=").to_float()
 	if not ["server", "client"].has(_role) or _peer_name.is_empty() or not _peer_name.is_valid_identifier():
 		_fail("Require --role=server/client and an identifier --name=")
+		return false
+	if not ["baseline", "full-kit", "control"].has(_scenario):
+		_fail("Unsupported network scenario: " + _scenario)
+		return false
+	if _scenario in ["full-kit", "control"] and _expected_clients != 2:
+		_fail("The full-kit and control scenarios require two real clients")
 		return false
 	if not _result_dir.is_absolute_path() or _port < 1 or _port > 65535 or _expected_clients < 1 or _expected_clients > 7 or _timeout <= 0.0 or _hold_seconds < 0.0:
 		_fail("Require an absolute --result-dir, valid port/client count, positive timeout and nonnegative hold")

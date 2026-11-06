@@ -1,14 +1,17 @@
 class_name ArenaView
 extends Node3D
 
+const SKY_UPPER_TONE: Color = Color(0.78, 0.78, 0.78, 1.0)
+const SKY_LOWER_TONE: Color = Color(0.68, 0.68, 0.68, 1.0)
+
+var mode: String = "ffa"
+
 func _ready() -> void:
 	var surface := ShaderMaterial.new()
 	surface.shader = preload("res://scripts/view/arena_surface.gdshader")
 	var outline := ShaderMaterial.new()
 	outline.shader = preload("res://scripts/view/outline.gdshader")
 	surface.next_pass = outline
-	var rock := _material(Color("#bcbcbc"), outline)
-	var top := _material(Color("#dedede"), outline)
 	var size: float = Tuning.PLATFORM_SIZE
 	_box(Vector3(0, -Tuning.PLATFORM_THICKNESS * 0.5, 0), Vector3(size, Tuning.PLATFORM_THICKNESS, size), surface, true)
 	# The four-sided underside retains the original silhouette and platform extent.
@@ -22,12 +25,23 @@ func _ready() -> void:
 		var facet := _material(Color("#bcbcbc").darkened(0.035 * layer), outline)
 		var mass := _mesh(stone, Vector3(0, -Tuning.PLATFORM_THICKNESS - stone.height * (layer + 0.5), 0), facet)
 		mass.rotation.y = PI * 0.25
-	_box(Vector3(0,Tuning.CENTER_HEIGHT * 0.5,0),Vector3(Tuning.CENTER_SIZE,Tuning.CENTER_HEIGHT,Tuning.CENTER_SIZE),top,true)
-	for side in [-1.0,1.0]:
-		_ramp(side * Tuning.RAMP_OFFSET,surface)
-		_box(Vector3(side * Tuning.LEDGE_OFFSET,Tuning.LEDGE_HEIGHT * 0.5,0),Vector3(Tuning.LEDGE_WIDTH,Tuning.LEDGE_HEIGHT,Tuning.LEDGE_LENGTH),top,true)
-	_environment()
+	if mode == "control":
+		_control_lanes(size)
+	else:
+		var top := _material(Color("#dedede"), outline)
+		_box(Vector3(0,Tuning.CENTER_HEIGHT * 0.5,0),Vector3(Tuning.CENTER_SIZE,Tuning.CENTER_HEIGHT,Tuning.CENTER_SIZE),top,true)
+		for side in [-1.0,1.0]:
+			_ramp(side * Tuning.RAMP_OFFSET,surface)
+			_box(Vector3(side * Tuning.LEDGE_OFFSET,Tuning.LEDGE_HEIGHT * 0.5,0),Vector3(Tuning.LEDGE_WIDTH,Tuning.LEDGE_HEIGHT,Tuning.LEDGE_LENGTH),top,true)
 	animate(0.0,0.0)
+
+func _control_lanes(size: float) -> void:
+	var line_material := StandardMaterial3D.new()
+	line_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	line_material.albedo_color = Color(0.77, 0.79, 0.78, 0.32)
+	line_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	for boundary: float in [-6.0, 6.0]:
+		_box(Vector3(boundary, 0.006, 0), Vector3(0.035, 0.008, size * 0.9), line_material)
 
 func _material(color: Color, outline: ShaderMaterial) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
@@ -87,31 +101,44 @@ func _ramp(x: float, material: Material) -> void:
 	shape.points = PackedVector3Array([a,b,c,d,e,f])
 	_proxy(shape,Transform3D.IDENTITY)
 
-func _environment() -> void:
-	var environment := Environment.new()
+static func ensure_scene_environment(environment_root: Node) -> void:
+	var world_environment: WorldEnvironment = environment_root.get_node_or_null("ArenaWorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		world_environment = WorldEnvironment.new()
+		world_environment.name = "ArenaWorldEnvironment"
+		environment_root.add_child(world_environment)
+	if world_environment.environment == null:
+		world_environment.environment = Environment.new()
+	var environment: Environment = world_environment.environment
 	environment.background_mode = Environment.BG_SKY
-	var sky := Sky.new()
-	var sky_material := ShaderMaterial.new()
-	sky_material.shader = preload("res://scripts/view/void_sky.gdshader")
-	sky.sky_material = sky_material
-	environment.sky = sky
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.ambient_light_color = Color("#ffffff")
 	environment.ambient_light_energy = Tuning.VIS_AMBIENT_ENERGY
 	environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	environment.fog_enabled = false
 	environment.glow_enabled = false
-	var world_environment := WorldEnvironment.new()
-	world_environment.environment = environment
-	add_child(world_environment)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(Tuning.LIGHT_PITCH,Tuning.LIGHT_YAW,0)
+	var sky: Sky = environment.sky
+	if sky == null:
+		sky = Sky.new()
+	var sky_material: ShaderMaterial = sky.sky_material as ShaderMaterial
+	if sky_material == null:
+		sky_material = ShaderMaterial.new()
+	sky_material.shader = preload("res://scripts/view/void_sky.gdshader")
+	sky_material.set_shader_parameter("upper_tone", SKY_UPPER_TONE)
+	sky_material.set_shader_parameter("lower_tone", SKY_LOWER_TONE)
+	sky.sky_material = sky_material
+	environment.sky = sky
+	var sun: DirectionalLight3D = environment_root.get_node_or_null("ArenaDirectionalLight") as DirectionalLight3D
+	if sun == null:
+		sun = DirectionalLight3D.new()
+		sun.name = "ArenaDirectionalLight"
+		environment_root.add_child(sun)
+	sun.rotation_degrees = Vector3(Tuning.LIGHT_PITCH, Tuning.LIGHT_YAW, 0.0)
 	sun.light_color = Color("#ffffff")
 	sun.light_energy = Tuning.VIS_SUN_ENERGY
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 100.0
 	sun.light_angular_distance = 0.0
-	add_child(sun)
 
 func animate(_delta: float, _time: float) -> void:
 	pass

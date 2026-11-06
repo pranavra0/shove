@@ -5,15 +5,16 @@ extends RefCounted
 static func command(world: Dictionary, id: int, memory: Dictionary, dt: float) -> Dictionary:
 	var next: Dictionary = memory.duplicate(true)
 	var tick: int = int(world.tick) + 1
-	if not world.players.has(id) or world.players[id].stocks <= 0:
+	if not world.players.has(id) or not World.is_player_active(world.players[id]):
 		return {"cmd": InputCmd.new(Vector2.ZERO, false, false, 0.0, tick), "memory": next}
 	var player: Dictionary = world.players[id]
+	var control_mode: bool = str(world.get("mode", "ffa")) == "control"
 	next.seed = int(next.get("seed", posmod(id * 97 + 17, 65521)))
 	var remaining: float = float(next.get("reaction_left", Tuning.BOT_REACTION)) - maxf(dt, 0.0)
 	var target: int = int(next.get("target", -1))
-	var lost_target: bool = target != -1 and (not world.players.has(target) or world.players[target].stocks <= 0)
+	var lost_target: bool = target != -1 and (not world.players.has(target) or not World.is_player_active(world.players[target]) or not World.are_enemies(player, world.players[target]))
 	if remaining <= 0.0 or lost_target:
-		target = _nearest_enemy(world.players, id)
+		target = _nearest_enemy(world, id)
 		next.target = target
 		var aim_sample: float = _sample(next)
 		next.bhop = _sample(next) < clampf(Tuning.BOT_BHOP_SKILL, 0.0, 1.0)
@@ -40,6 +41,19 @@ static func command(world: Dictionary, id: int, memory: Dictionary, dt: float) -
 	next.reaction_left = remaining
 	var desired: Vector3 = next.get("direction", Vector3.ZERO)
 	var yaw: float = float(next.get("yaw", player.yaw))
+	var objective_zone: int = -1
+	var objective_near: bool = false
+	if control_mode:
+		objective_zone = _control_objective(world, id)
+		if objective_zone >= 0:
+			var zone: Dictionary = world.control.zones[objective_zone]
+			var to_zone: Vector3 = zone.position - player.position
+			to_zone.y = 0.0
+			var zone_distance: float = to_zone.length()
+			objective_near = zone_distance <= float(zone.radius) + Tuning.BOT_CONTROL_ZONE_MARGIN
+			desired = Vector3.ZERO if zone_distance <= float(zone.radius) else to_zone.normalized()
+		elif Vector2(player.position.x, player.position.z).length() > Tuning.BOT_CONTROL_CENTER_RADIUS:
+			desired = Vector3(-player.position.x, 0.0, -player.position.z).normalized()
 	var position: Vector3 = player.position
 	var horizontal := Vector3(player.velocity.x, 0.0, player.velocity.z)
 	var recovering: bool = not player.on_ground and Vector2(position.x, position.z).length() > Tuning.BOT_RECOVER_RADIUS
@@ -62,14 +76,15 @@ static func command(world: Dictionary, id: int, memory: Dictionary, dt: float) -
 	if desired.length_squared() > 1.0:
 		desired = desired.normalized()
 	var local_move: Vector3 = desired.rotated(Vector3.UP, -yaw)
-	var jump: bool = bool(next.get("bhop", false)) and player.on_ground and desired.length_squared() > 0.0 and not avoiding_edge
+	var in_capture_zone: bool = control_mode and objective_near and player.on_ground
+	var jump: bool = bool(next.get("bhop", false)) and player.on_ground and desired.length_squared() > 0.0 and not avoiding_edge and not in_capture_zone
 	var cmd := InputCmd.new(Vector2(local_move.x, local_move.z), jump, false, yaw, tick)
 	cmd.pitch = float(next.get("pitch", 0.0))
 	if float(player.hitstun) <= 0.0 and player.move_state.is_empty():
-		_kit_intent(world, id, player, target, cmd, next, dt, safe_limit, recovering, avoiding_edge)
+		_kit_intent(world, id, player, target, cmd, next, dt, safe_limit, recovering, avoiding_edge, control_mode and objective_near, control_mode and objective_zone >= 0)
 	return {"cmd": cmd, "memory": next}
 
-static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: int, cmd: InputCmd, memory: Dictionary, dt: float, safe_limit: float, recovering: bool, avoiding_edge: bool) -> void:
+static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: int, cmd: InputCmd, memory: Dictionary, dt: float, safe_limit: float, recovering: bool, avoiding_edge: bool, objective_near: bool = false, objective_active: bool = false) -> void:
 	var movement_world: Vector3 = Vector3(cmd.move.x, 0.0, cmd.move.y).rotated(Vector3.UP, cmd.yaw)
 	var element: String = str(player.element)
 	var edge_limit: float = Tuning.PLATFORM_SIZE * 0.5 - Tuning.BODY_RADIUS
@@ -96,8 +111,6 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 			deflect_gate = _sample(memory) < clampf(Tuning.BOT_DEFLECT_SKILL, 0.0, 1.0)
 			memory.deflect_gate = deflect_gate
 		if int(memory.get("deflect_attempt", -1)) == threat_id and not _ready_shove(player):
-			# Preserve the committed shove's aim throughout windup and active frames;
-			# a wall request here can intercept the same shot before it is deflected.
 			cmd.moves = 0
 			cmd.move = Vector2.ZERO
 			_aim_at(cmd, player.position, threat.position)
@@ -116,7 +129,7 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 			_aim_at(cmd, player.position, threat.position)
 			cmd.pitch = 0.0
 			return
-	if target == -1 or not world.players.has(target) or world.players[target].stocks <= 0:
+	if target == -1 or not world.players.has(target) or not World.is_player_active(world.players[target]) or not World.are_enemies(player, world.players[target]):
 		return
 	var enemy: Dictionary = world.players[target]
 	var offset: Vector3 = enemy.position - player.position
@@ -126,11 +139,11 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 		cmd.move = Vector2.ZERO
 		cmd.shove = false
 		return
-	if player.on_ground and enemy.position.y - player.position.y >= Tuning.BOT_HIGH_JUMP_HEIGHT and distance <= Tuning.BOT_HIGH_JUMP_RANGE and _ready(player, "high_jump"):
+	if not objective_near and player.on_ground and enemy.position.y - player.position.y >= Tuning.BOT_HIGH_JUMP_HEIGHT and distance <= Tuning.BOT_HIGH_JUMP_RANGE and _ready(player, "high_jump"):
 		cmd.moves = InputCmd.HIGH_JUMP
 		cmd.move = Vector2.ZERO
 		return
-	if distance > Tuning.BOT_DASH_RANGE and _ready(player, "h_dash"):
+	if not objective_active and distance > Tuning.BOT_DASH_RANGE and _ready(player, "h_dash"):
 		var dash: Dictionary = Kits.move(element, "h_dash")
 		var dash_direction: Vector3 = Vector3(-sin(cmd.yaw), 0.0, -cos(cmd.yaw))
 		var dash_velocity: Vector3 = dash_direction * float(dash.speed)
@@ -145,7 +158,7 @@ static func _kit_intent(world: Dictionary, id: int, player: Dictionary, target: 
 		cmd.moves = InputCmd.QUICK_FIRE
 	elif _ready(player, "basic_shot"):
 		cmd.moves = InputCmd.BASIC_SHOT
-	if not recovering and not avoiding_edge and cmd.moves != 0 and _wall_obstructs(world, player.position, enemy.position) and _ready(player, "curve_shot"):
+	if not objective_active and not recovering and not avoiding_edge and cmd.moves != 0 and _wall_obstructs(world, player.position, enemy.position) and _ready(player, "curve_shot"):
 		cmd.moves = InputCmd.CURVE_SHOT
 		cmd.move.x = -1.0 if posmod(id, 2) == 0 else 1.0
 		_curve_aim(world, player.position, enemy.position, cmd, id, element)
@@ -209,9 +222,10 @@ static func _incoming(world: Dictionary, id: int, player: Dictionary) -> Diction
 	var best_time: float = INF
 	var ids: Array = world.projectiles.keys()
 	ids.sort()
-	for pid in ids:
+	for pid: int in ids:
 		var projectile: Dictionary = world.projectiles[pid]
-		if int(projectile.owner) == id:
+		var owner_id: int = int(projectile.owner)
+		if owner_id == id or world.players.has(owner_id) and not World.are_enemies(player, world.players[owner_id]):
 			continue
 		var velocity: Vector3 = projectile.velocity
 		var speed_sq: float = velocity.length_squared()
@@ -231,25 +245,52 @@ static func _incoming(world: Dictionary, id: int, player: Dictionary) -> Diction
 static func _wall_obstructs(world: Dictionary, start: Vector3, finish: Vector3) -> bool:
 	var wall_ids: Array = world.walls.keys()
 	wall_ids.sort()
-	for wall_id in wall_ids:
+	for wall_id: int in wall_ids:
 		var wall: Dictionary = world.walls[wall_id]
 		if _segment_hits_box(start, finish, wall.position, wall.size):
 			return true
 	return false
 
-static func _nearest_enemy(players: Dictionary, id: int) -> int:
+static func _nearest_enemy(world: Dictionary, id: int) -> int:
+	var players: Dictionary = world.players
 	var ids: Array = players.keys()
 	ids.sort()
 	var target: int = -1
 	var nearest: float = INF
-	for candidate in ids:
-		if candidate == id or players[candidate].stocks <= 0:
+	var player: Dictionary = players[id]
+	for candidate: int in ids:
+		if candidate == id or not World.is_player_active(players[candidate]) or not World.are_enemies(player, players[candidate]):
 			continue
-		var distance: float = players[id].position.distance_squared_to(players[candidate].position)
+		var distance: float = player.position.distance_squared_to(players[candidate].position)
 		if distance < nearest:
 			nearest = distance
-			target = candidate
+			target = int(candidate)
 	return target
+
+static func _control_objective(world: Dictionary, id: int) -> int:
+	var player: Dictionary = world.players[id]
+	var team: int = int(player.team)
+	if team < 0:
+		return -1
+	var zones: Array = world.control.zones
+	var candidates: Array[int] = []
+	for index in range(zones.size()):
+		var zone: Dictionary = zones[index]
+		if int(zone.owner) != team or int(zone.capturing) != -1 and int(zone.capturing) != team:
+			candidates.append(index)
+	if candidates.is_empty():
+		return -1
+	var teammates: Array = []
+	var ids: Array = world.players.keys()
+	ids.sort()
+	for candidate_id: int in ids:
+		var candidate: Dictionary = world.players[candidate_id]
+		if int(candidate.team) == team and World.is_player_active(candidate):
+			teammates.append(int(candidate_id))
+	var rank: int = teammates.find(id)
+	if rank < 0:
+		return candidates[0]
+	return candidates[rank % candidates.size()]
 
 static func _sample(memory: Dictionary) -> float:
 	memory.seed = posmod(int(memory.seed) * 75 + 74, 65521)

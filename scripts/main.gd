@@ -19,6 +19,8 @@ var _world_time: float = 0.0
 var _match_ids: Array = []
 var camera: Camera3D
 var arena: ArenaView
+var control_zones: ControlZonesView
+var selected_mode: String = "ffa"
 var juice: JuiceView
 var synth: SynthAudio
 var game_hud: GameHUD
@@ -104,6 +106,7 @@ func show_menu() -> void:
 	_dummy_elapsed.clear()
 	_world_time = 0.0
 	_clear_players()
+	_set_selected_mode("ffa")
 	_sync_cursor()
 	_clear_menu("SHOVE")
 	_menu_button("Play vs Bots", "PlayBots", _show_offline_setup)
@@ -122,6 +125,15 @@ func _show_offline_setup() -> void:
 	bots.select(1)
 	menu_panel.add_child(bots)
 	var solo := CheckButton.new()
+	var mode_picker := OptionButton.new()
+	mode_picker.name = "Mode"
+	mode_picker.add_item("Free-for-all")
+	mode_picker.add_item("Control points")
+	mode_picker.select(1 if selected_mode == "control" else 0)
+	mode_picker.item_selected.connect(func(index: int) -> void:
+		_set_selected_mode("control" if index == 1 else "ffa")
+	)
+	menu_panel.add_child(mode_picker)
 	solo.name = "SoloPractice"
 	solo.text = "Solo practice (no opponents)"
 	solo.toggled.connect(func(enabled: bool) -> void: bots.disabled = enabled)
@@ -136,7 +148,10 @@ func _show_offline_setup() -> void:
 		selected_element = Kits.ELEMENTS[index]
 	)
 	menu_panel.add_child(element_picker)
-	_menu_button("Start", "Start", func() -> void: start_offline(0 if solo.button_pressed else bots.get_selected_id()))
+	_menu_button("Start", "Start", func() -> void:
+		_set_selected_mode("control" if mode_picker.selected == 1 else "ffa")
+		start_offline(0 if solo.button_pressed else bots.get_selected_id())
+	)
 	_menu_button("Back", "Back", show_menu)
 
 func _show_network_setup(hosting: bool) -> void:
@@ -168,8 +183,10 @@ func start_match(ids: Array) -> void:
 	bot_ids.clear()
 	bot_memory.clear()
 	dummy_ids.clear()
-	_dummy_elapsed.clear()
-	world = World.create(ids)
+	world = World.create(ids, selected_mode)
+	if selected_mode == "control":
+		for id in world.players:
+			world.players[id].element = selected_element if int(id) == local_id else "earth"
 	if capture_mode:
 		_roster_rng.seed = 0x5EED + int(ids.hash())
 	else:
@@ -260,7 +277,7 @@ func _physics_process(_delta: float) -> void:
 				commands[player_id] = decision.cmd
 				bot_memory[player_id] = decision.memory
 			for dummy_id in dummy_ids:
-				if not world.players.has(dummy_id) or int(world.players[dummy_id].stocks) <= 0:
+				if not world.players.has(dummy_id) or not World.is_player_active(world.players[dummy_id]):
 					continue
 				var elapsed: float = float(_dummy_elapsed.get(dummy_id, 0.0)) + Tuning.FIXED_DELTA
 				var commands_for_dummy := InputCmd.new(Vector2.ZERO, false, false, float(world.players[dummy_id].yaw), int(world.tick))
@@ -302,7 +319,18 @@ func _dispatch_events(events: Array) -> void:
 		world_event.emit(event)
 
 func _can_control() -> bool:
-	return not paused and not replaying and not tuning_panel.is_open() and not world.is_empty() and flow.get("phase", "menu") in ["playing", "ringout"] and world.players.has(local_id) and int(world.players[local_id].stocks) > 0
+	return not paused and not replaying and not tuning_panel.is_open() and not world.is_empty() and flow.get("phase", "menu") in ["playing", "ringout"] and world.players.has(local_id) and World.is_player_active(world.players[local_id])
+
+func _set_selected_mode(mode: String) -> void:
+	if mode not in ["ffa", "control"] or selected_mode == mode:
+		return
+	selected_mode = mode
+	if arena != null and is_instance_valid(arena):
+		remove_child(arena)
+		arena.queue_free()
+		_build_world()
+	if control_zones != null:
+		control_zones.clear()
 
 func _sync_cursor() -> void:
 	var mode: int = Input.MOUSE_MODE_CAPTURED if _can_control() and get_window().has_focus() else Input.MOUSE_MODE_VISIBLE
@@ -335,7 +363,8 @@ func _show_winner() -> void:
 		network_ui.show_winner()
 		return
 	var winner: int = int(flow.winner)
-	var result: String = "It’s a draw." if winner < 0 else ("You win." if winner == local_id else "Bot %d wins." % winner)
+	var winner_team: int = int(world.get("control", {}).get("winner_team", -1))
+	var result: String = ("Team %d wins." % (winner_team + 1)) if winner_team >= 0 else ("It’s a draw." if winner < 0 else ("You win." if winner == local_id else "Bot %d wins." % winner))
 	_clear_menu(result)
 	_menu_button("Rematch", "Rematch", _rematch)
 	_menu_button("Main menu", "MainMenu", show_menu)
@@ -344,6 +373,8 @@ func _process(delta: float) -> void:
 	# Presentation only: authoritative simulation and flow advance in physics.
 	presentation_time += delta
 	arena.animate(delta, presentation_time)
+	if control_zones != null:
+		control_zones.render_world(world)
 	var trajectory: Array = []
 	var trajectory_color := Color("#eeeeee")
 	if gizmos.trajectory_enabled and world.has("players") and world.players.has(local_id):
@@ -402,10 +433,10 @@ func _update_camera(delta: float) -> void:
 		camera.fov = Tuning.CAMERA_FOV
 		return
 	var camera_id: int = local_id
-	if not world.players.has(camera_id) or world.players[camera_id].stocks <= 0:
+	if not World.is_player_active(world.players.get(camera_id, {})):
 		for id in world.players:
-			if world.players[id].stocks > 0:
-				camera_id = id
+			if World.is_player_active(world.players[id]):
+				camera_id = int(id)
 				break
 	if not world.players.has(camera_id):
 		return
@@ -501,7 +532,13 @@ func _menu_field(title: String, node_name: String, value: String) -> void:
 
 func _build_world() -> void:
 	arena = ArenaView.new()
+	arena.mode = selected_mode
+	ArenaView.ensure_scene_environment(self)
 	add_child(arena)
+	if control_zones == null or not is_instance_valid(control_zones):
+		control_zones = ControlZonesView.new()
+		control_zones.name = "ControlZones"
+		add_child(control_zones)
 
 func _build_player(player_id: int) -> Node3D:
 	var view := AvatarView.new()
@@ -775,6 +812,55 @@ func _capture_dev_scenario(scenario: String) -> Variant:
 	game_hud.render_frame(world, flow, local_id, camera, 0.0)
 	return true
 
+func _capture_control_scenario() -> Variant:
+	_set_selected_mode("control")
+	start_match([1, 2, 3, 4, 5, 6, 7, 8])
+	flow.phase = "playing"
+	menu_overlay.hide()
+	var zones: Array = world.control.zones
+	if zones.size() != 2:
+		return {"available": false, "reason": "Control mode did not create exactly two capture zones."}
+	for id in world.players:
+		var player: Dictionary = world.players[id]
+		player.velocity = Vector3.ZERO
+		player.on_ground = true
+		player.damage = 0.0
+		var team: int = int(player.team)
+		var zone_position: Vector3 = zones[team].position
+		var z_offset: float = (float(id) - 4.5) * 0.35
+		player.position = Vector3(zone_position.x, Tuning.BODY_HEIGHT * 0.5, zone_position.z + z_offset)
+		player.yaw = -PI * 0.5 if team == 0 else PI * 0.5
+	var target_team: int = 1
+	var target_position: Vector3 = zones[1].position
+	var capture_observed: bool = false
+	var limit: int = mini(ceili(Tuning.CP_CAPTURE_TIME / Tuning.FIXED_DELTA) + 32, 4096)
+	for frame in range(limit):
+		var commands: Dictionary = {}
+		for bot_id in bot_ids:
+			var decision: Dictionary = BotSim.command(world, int(bot_id), bot_memory.get(bot_id, {}), Tuning.FIXED_DELTA)
+			commands[bot_id] = decision.cmd
+			bot_memory[bot_id] = decision.memory
+		_capture_sim_step(commands)
+		var control_state: Dictionary = world.control
+		for zone: Dictionary in control_state.zones:
+			var progress: float = float(zone.get("progress", 0.0))
+			if int(zone.get("capturing", -1)) == target_team and progress >= 0.5 and progress < 1.0:
+				capture_observed = true
+				target_position = zone.position
+				break
+		if capture_observed:
+			break
+	if not capture_observed:
+		return {"available": false, "reason": "Zone-aware bots did not reach half capture progress through World.step."}
+	for id in world.players:
+		player_views[id].render_state(world.players[id], 0.0, presentation_time)
+	kit_entities.render_world(world)
+	control_zones.render_world(world)
+	camera.global_position = target_position + Vector3(9.0, 7.0, 12.0)
+	camera.look_at(target_position)
+	game_hud.render_frame(world, flow, local_id, camera, 0.0)
+	return true
+
 func capture_scenario(scenario: String) -> Variant:
 	# Deterministic presentation staging; never used by a live match.
 	set_physics_process(false)
@@ -787,6 +873,8 @@ func capture_scenario(scenario: String) -> Variant:
 		camera.global_position = Tuning.CAMERA_MENU_POSITION
 		camera.look_at(Tuning.CAMERA_MENU_TARGET)
 		return true
+	if scenario == "control_capture":
+		return _capture_control_scenario()
 	if scenario in ["projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect"]:
 		return _capture_kit_scenario(scenario)
 	if scenario in ["tuning_element", "dummy", "trajectory"]:
@@ -909,10 +997,15 @@ func _spawn_dummy() -> void:
 		id += 1
 	var ids: Array = world.players.keys()
 	ids.append(id)
-	world.players[id] = World.create(ids).players[id]
+	var mode: String = str(world.get("mode", selected_mode))
+	var roster: Dictionary = World.create(ids, mode)
+	for player_id in ids:
+		if world.players.has(player_id):
+			world.players[player_id].team = roster.players[player_id].team
+	world.players[id] = roster.players[id]
 	World.set_element(world, id, "earth")
 	var target: Vector3 = world.players.get(local_id, {}).get("position", Vector3.ZERO)
-	world.players[id].position = World._safe_spawn(target + Vector3(5.0, 0.0, 0.0))
+	world.players[id].position = World._safe_spawn(target + Vector3(5.0, 0.0, 0.0), mode)
 	world.players[id].spawn = world.players[id].position
 	world.players[id].yaw = atan2(-(target - world.players[id].position).x, -(target - world.players[id].position).z)
 	player_views[id] = _build_player(id)
@@ -1030,6 +1123,7 @@ func replay_latest() -> void:
 	tuning_panel.set_open(false)
 	_apply_settings(latest_tape.settings)
 	world = latest_tape.restart()
+	_set_selected_mode(str(world.get("mode", "ffa")))
 	_clear_players()
 	for id in world.players:
 		player_views[id] = _build_player(int(id))
@@ -1082,7 +1176,12 @@ func _run_dev_actions() -> void:
 				id += 1
 			var ids: Array = world.players.keys()
 			ids.append(id)
-			world.players[id] = World.create(ids).players[id]
+			var mode: String = str(world.get("mode", selected_mode))
+			var roster: Dictionary = World.create(ids, mode)
+			for player_id in ids:
+				if world.players.has(player_id):
+					world.players[player_id].team = roster.players[player_id].team
+			world.players[id] = roster.players[id]
 			World.set_element(world, id, Kits.ELEMENTS[_roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)])
 			player_views[id] = _build_player(id)
 			bot_ids.append(id)
@@ -1104,7 +1203,10 @@ func _run_dev_actions() -> void:
 			_begin_recording()
 		elif key == KEY_F10 and world.players.has(local_id):
 			var player: Dictionary = world.players[local_id]
-			player.position = Vector3(0, Tuning.CENTER_HEIGHT + Tuning.BODY_HEIGHT * 0.5, 0)
+			var mode: String = str(world.get("mode", selected_mode))
+			var position := Vector3.ZERO
+			position.y = World.floor_height(position, mode) + Tuning.BODY_HEIGHT * 0.5
+			player.position = position
 			player.velocity = Vector3.ZERO
 			player.on_ground = true
 			_begin_recording()
@@ -1126,6 +1228,8 @@ func _on_network_lobby() -> void:
 func _on_network_world(next_world: Dictionary, next_flow: Dictionary) -> void:
 	var previous_phase: String = str(flow.get("phase", "menu"))
 	local_id = network.local_id
+	if not next_world.is_empty():
+		_set_selected_mode(str(next_world.get("mode", "ffa")))
 	world = next_world
 	flow = next_flow
 	if world.is_empty():

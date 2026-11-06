@@ -13,6 +13,7 @@ var connected: bool = false
 var local_id: int = 0
 var members: Dictionary = {}
 var bot_fill: int = 0
+var selected_mode: String = "ffa"
 var world: Dictionary = {}
 var authoritative_world: Dictionary = {}
 var flow: Dictionary = {"phase": "lobby"}
@@ -100,7 +101,7 @@ func close() -> void:
 	local_id = 0
 	members.clear()
 	world = {}
-	authoritative_world = {}
+	selected_mode = "ffa"
 	flow = {"phase": "lobby"}
 	bot_fill = 0
 	epoch = 0
@@ -142,8 +143,17 @@ func set_bot_fill(count: int) -> void:
 	_sync_bots()
 	_broadcast_lobby()
 
+
+func set_mode(mode: String) -> void:
+	if not hosting or str(flow.phase) != "lobby" or not ["ffa", "control"].has(mode):
+		return
+	if selected_mode == mode:
+		return
+	selected_mode = mode
+	_broadcast_lobby()
+
 func start_match() -> bool:
-	if not hosting or not active:
+	if not hosting or not active or not ["ffa", "control"].has(selected_mode):
 		return false
 	for id in members:
 		if not members[id].bot and not members[id].ready:
@@ -160,8 +170,7 @@ func start_match() -> bool:
 	_echo.clear()
 	_bot_memory.clear()
 	_held_commands.clear()
-	_pending_settings.clear()
-	world = World.create(members.keys())
+	world = World.create(members.keys(), selected_mode)
 	for id in members:
 		World.set_element(world, int(id), str(members[id].get("element", "earth")))
 	authoritative_world = world.duplicate(true)
@@ -169,7 +178,7 @@ func start_match() -> bool:
 	flow.phase = "countdown"
 	recording = ReplayTape.new()
 	recording.begin(world, TuningStore.snapshot())
-	var payload := {"epoch": epoch, "world": world, "flow": flow, "settings": TuningStore.encode(TuningStore.snapshot()), "members": members}
+	var payload := {"epoch": epoch, "world": world, "flow": flow, "settings": TuningStore.encode(TuningStore.snapshot()), "members": members, "mode": selected_mode}
 	_broadcast("_start_rpc", payload, true)
 	world_updated.emit(world, flow)
 	return true
@@ -352,13 +361,14 @@ func _profile_rpc(data: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable", 0)
 func _lobby_rpc(data: Dictionary) -> void:
-	if hosting or not data.has_all(["members", "bots", "epoch", "lobby"]) or not data.members is Dictionary or not data.epoch is int or data.epoch < epoch:
+	if hosting or not data.has_all(["members", "bots", "epoch", "lobby", "mode"]) or data.size() != 5 or not data.members is Dictionary or not data.epoch is int or data.epoch < epoch or not data.bots is int or not data.lobby is bool or not data.mode is String or not ["ffa", "control"].has(data.mode):
 		return
 	members = data.members.duplicate(true)
 	if members.has(local_id):
 		var self_profile: Dictionary = members[local_id]
 		_profile = _member(str(self_profile.name), int(self_profile.color), bool(self_profile.ready), str(self_profile.get("element", "earth")))
 	bot_fill = int(data.bots)
+	selected_mode = data.mode
 	connected = true
 	if data.lobby:
 		_outbox.clear()
@@ -372,7 +382,7 @@ func _lobby_rpc(data: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable", 0)
 func _start_rpc(data: Dictionary) -> void:
-	if hosting or not data.has_all(["epoch", "world", "flow", "settings", "members"]) or not data.epoch is int or data.epoch <= epoch or not data.settings is Dictionary or not data.flow is Dictionary or not data.members is Dictionary or not ReplayTape._valid_world(data.world):
+	if hosting or not data.has_all(["epoch", "world", "flow", "settings", "members", "mode"]) or data.size() != 6 or not data.epoch is int or data.epoch <= epoch or not data.mode is String or not ["ffa", "control"].has(data.mode) or not data.settings is Dictionary or not data.flow is Dictionary or not data.members is Dictionary or not ReplayTape._valid_world(data.world) or str(data.world.mode) != data.mode:
 		return
 	var values: Dictionary = TuningStore.decode(data.settings)
 	if values.is_empty() or not data.world.players.has(local_id):
@@ -381,6 +391,7 @@ func _start_rpc(data: Dictionary) -> void:
 	settings_changed.emit(values)
 	TuningStore.apply(values)
 	epoch = data.epoch
+	selected_mode = data.mode
 	_outbox.clear()
 	_reset_clock()
 	members = data.members.duplicate(true)
@@ -491,15 +502,32 @@ func _peer_disconnected(id: int) -> void:
 	_received.erase(id)
 	_acks.erase(id)
 	_echo.erase(id)
+	_bot_memory.erase(id)
 	if not world.is_empty() and world.players.has(id) and str(flow.phase) != "winner":
 		world = world.duplicate(true)
-		world.players[id].stocks = 0
-		world.players[id].velocity = Vector3.ZERO
+		world.players.erase(id)
+		for projectile_id: Variant in world.projectiles.keys():
+			if int(world.projectiles[projectile_id].owner) == id:
+				world.projectiles.erase(projectile_id)
+			else:
+				world.projectiles[projectile_id].hit_ids.erase(id)
+		for wall_id: Variant in world.walls.keys():
+			if int(world.walls[wall_id].owner) == id:
+				world.walls.erase(wall_id)
+			else:
+				world.walls[wall_id].hit_shoves.erase(id)
+		for player: Dictionary in world.players.values():
+			player.attack_hits.erase(id)
+			if int(player.chain_target) == id:
+				player.chain_target = -1
+				player.chain_hits = 0
+				player.chain_timer = 0.0
+		world.events.clear()
 		authoritative_world = world.duplicate(true)
 		# A departure is an external roster edit, so start a new reproducible tape segment.
 		recording = ReplayTape.new()
 		recording.begin(world, TuningStore.snapshot())
-	_broadcast_lobby()
+		world_updated.emit(world, flow)
 
 func _connected_to_server() -> void:
 	if not active or hosting:
@@ -554,8 +582,9 @@ func _sync_bots() -> void:
 		members[bot_id] = profile
 
 func _broadcast_lobby() -> void:
-	_broadcast("_lobby_rpc", {"members": members, "bots": bot_fill, "epoch": epoch, "lobby": str(flow.phase) == "lobby"}, true)
+	_broadcast("_lobby_rpc", {"members": members, "bots": bot_fill, "epoch": epoch, "lobby": str(flow.phase) == "lobby", "mode": selected_mode}, true)
 	lobby_updated.emit()
+	
 
 func _broadcast(method: String, data: Dictionary, reliable: bool) -> void:
 	for id in members:

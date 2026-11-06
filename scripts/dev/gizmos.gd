@@ -21,8 +21,8 @@ func render_frame(world: Dictionary, preview: Array = [], preview_color: Color =
 		return
 	_lines.clear_surfaces()
 	_drawing = false
-	for player in world.players.values():
-		if player.stocks <= 0:
+	for player: Dictionary in world.players.values():
+		if not World.is_player_active(player):
 			continue
 		var at: Vector3 = player.position
 		if Tuning.DEV_VELOCITY_ENABLED:

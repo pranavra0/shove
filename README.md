@@ -1,6 +1,6 @@
 # Shove
 
-A code-built, momentum-driven stock brawler. Build speed with Source-style air strafing, shove rivals off a floating island, and keep your last stock. Godot 4; verified with 4.7.2. No imported art or audio assets.
+A code-built, momentum-driven brawler with Free-for-all and Control points modes. Build speed with Source-style air strafing, shove rivals off a floating island, or capture and defend team zones. Godot 4; verified with 4.7.2. No imported art or audio assets.
 
 ## Run
 
@@ -10,7 +10,8 @@ From this directory:
 godot --path .
 ```
 
-Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practice** for a sandbox without opponents. Three stocks by default; the last player standing wins. **Rematch** restarts with the same participants.
+Choose **Play vs Bots**, select **Free-for-all** or **Control points** in the mode option, choose 1–7 bots (maximum eight total), then **Start**. Free-for-all is the default. **Solo practice** remains available without opponents. Free-for-all uses three stocks by default and the last active player wins; Control points is team-based, awards score for zone ownership and knockbacks, and has no stock elimination. **Rematch** keeps the mode and participants.
+
 
 | Control | Action |
 |---|---|
@@ -45,12 +46,15 @@ Four kits define distinct combat styles:
 - **Fire:** highest damage and lowest knockback scale; slight air-target homing; slow wall cooldown.
 - **Air:** fast, small shots with the highest knockback scale; momentum-preserving dash and two recoveries.
 
-The element is selected in offline setup or the online profile, and is part of simulation state.
+The selected mode is part of simulation state. Control points uses two balanced teams (up to 4v4), two side zones and a broad, flat three-lane platform with an unobstructed center. A player captures only while grounded in a zone: one uncontested team fills its progress, an empty or contested zone freezes, and a new capturing team starts from zero. The existing owner keeps the zone until an opposing capture completes. Owning both zones scores for that team and applies the configured full-knockback bonus. First team to the target score wins. Ring-outs cost the team score and trigger a delayed respawn; players are not eliminated, including when their stock counter reaches zero.
 
-Bots choose from their assigned kit: they lead shots from the current target's motion, route curve shots around an obstructing wall, and can answer incoming threats with a probability-gated shove deflection or a wall. Edge avoidance and offstage recovery steer them toward safety; reaction delay, bhop skill and `BOT_DEFLECT_SKILL` tune aspects of their behavior. Offline match start and F3 bot-add assign an element from the dedicated roster RNG before replay recording begins; capture mode seeds that RNG from the participant IDs for reproducible assignment, and rematches retain the roster's elements.
-Each kit provides nine moves: basic shot, curve shot, quick fire, shove, high jump, down dash/slam, wall, horizontal dash and recovery. Basic shot, quick fire and shove are held controls; curve shot activates on release, while E, Ctrl, R and Shift activate on press. Releasing and repressing Space in air can request a recovery. Move requests are prioritized, cooldown-gated, and use the selected kit's move data. Aim pitch distinguishes curve-shot behavior: aiming down produces a spike and aiming up a lob. Walls are placed horizontally or vertically according to aim, and projectiles can be deflected by shove; deflection transfers ownership and increases speed/damage up to configured caps.
+Control presentation uses two team accents and outlined, text-free zone fill rings. Control bots split across the side objectives, capture or defend zones, and fight around the center when objective pressure allows; their movement/capture behavior is tuned separately from Free-for-all bot decisions. Team limits apply to both bots and humans.
 
-Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. M5 adds per-move/per-element editor exposure and offline dev tools; the full-kit network fixture covers all four elements and all nine move slots, but not all 36 element/slot combinations.
+Control mode tuning is available in F1 alongside other simulation fields. Current defaults: `CP_LANE_OFFSET` 12 m, `CP_ZONE_RADIUS` 3 m, `CP_CAPTURE_TIME` 2 s, `CP_CAPTURE_HEIGHT` 0.3 m, `CP_SCORE_RATE` 4 points/s, `CP_SCORE_TARGET` 100 points, `CP_KB_BONUS` 1.15×, `CP_RINGOUT_PENALTY` 2 points, `CP_RESPAWN_DELAY` 2 s, and `CP_TEAM_COLORS` [`#4d8ec9`, `#d98245`]. Control bot objective defaults are `BOT_CONTROL_ZONE_MARGIN` 2 m and `BOT_CONTROL_CENTER_RADIUS` 3 m. Capture time, zone radius and target score must be positive; score rates, delays and penalties are nonnegative; knockback bonus is at least 1; the team color array has exactly two entries.
+
+In Control points, offline F3 adds a normal team-assigned bot and V adds the existing timed basic-shot dummy; both obey the eight-player roster cap. The dummy aims at the local player but is assigned a team like any roster member, so same-team fire does not deal friendly damage. V remains an offline developer tool; online bot fill is host-controlled.
+
+The remaining `BOT_*` fields control reaction/aim, bhop, edge and recovery behavior, threat response, and move-selection distances. Numeric distances/speeds are metres (or metres/second where a speed is named), timing values are seconds, and skill/probability fields are normalized fractions. Live tuning remains recorded in replay and host-authoritative online.
 
 The portable default renderer is Compatibility/OpenGL. The default white-model presentation uses flat outlined primitives, a subtle world-space grid, hard directional shadows and a two-tone horizon. Decorative particles are disabled; gameplay hitstop, small shake and speed FOV remain toggleable in F1.
 
@@ -61,8 +65,7 @@ Launch two instances with `godot --path .`.
 1. In the first, choose **Host**, enter a player name, color and UDP port (default **7777**), then **Host**.
 2. In the second, choose **Join**, enter **127.0.0.1** and the same port for localhost, then **Connect**. For LAN play, use the host's LAN IP and allow its UDP port through the firewall.
 3. Each human, including the host, toggles **Ready to play**. The host can select **Bot fill** up to eight total participants.
-4. The host chooses **Start match**. Countdown, ring-outs, stocks and winner are server-authoritative. The host can **Rematch** directly or **Return to lobby**.
-5. **Leave session** returns to the main menu; host disconnection closes clients cleanly.
+4. The host chooses the mode (**Free-for-all** by default or **Control points**) and **Start match**. Countdown, ring-outs, stocks and winner are server-authoritative. The host can **Rematch** directly or **Return to lobby**.
 
 Both instances must run the same project/engine revision. This is a direct-IP listen server, not an Internet matchmaking/NAT-traversal service. Online Escape menus release local input without pausing the server. Only the focused window captures the mouse.
 
@@ -79,15 +82,23 @@ godot --headless --path . --script tests/scene_smoke.gd
 python3 tools/net_test.py --godot godot
 ```
 
-M5 integration checks extend the standard gates:
+Observed M6 verification: `tools/test.sh` passed all 17 suites; the rendered focused-window control scene passed actual mode selection, 4v4 bot capture, zero-stock respawn input, natural team winner/rematch and default-FFA behavior. A rendered host-lobby smoke verified the real host UI's Control mode selection, three-bot fill, Ready/Host start, and the authoritative 2v2 flat Control World. The rendered native-input smoke passed all nine actions plus pitch, entities and replay; baseline three-peer FFA ENet passed. The real control ENet scenario passed with a host, two clients and an Air bot under 100 ms one-way latency, 10 ms jitter and 5% packet loss; all peers agreed on terminal result and rematch reset, and the host replay matched. The five rendered screenshots `docs/shots/m6/control_lobby.png`, `control_online_host.png`, `control_setup.png`, `control_capture.png`, and `control_winner.png` were inspected and accepted. The final full-kit network gate remains pending after a run failed to observe its expected slam outcome; M6 is not yet a fully verified milestone.
 
 ```sh
-godot --audio-driver Dummy --path . --script tests/kit_tuning_scene_smoke.gd
-godot --audio-driver Dummy --path . --script tests/kit_dev_smoke.gd
-python3 tools/net_test.py --godot godot --scenario=full-kit
+godot --headless --path . --script tests/control_test.gd
+godot --headless --path . --script tests/control_replay_test.gd
+godot --audio-driver Dummy --path . --script tests/control_scene_smoke.gd
+godot --headless --path . --script tests/bot_control_test.gd
+python3 tools/net_test.py --godot godot --scenario=control
 ```
+`control_test.gd`, `control_replay_test.gd`, and `bot_control_test.gd` are headless checks; `tools/test.sh` runs the full `tests/*_test.gd` suite. `control_scene_smoke.gd` drives the real main scene, including focused input after a zero-stock respawn, so it requires a graphical display and the game window to be focused; do not run it with `--headless`.
 
-The first two drive the actual scene. `full-kit` runs a real host and two clients under simulated latency/jitter/loss, checks successful move outcomes and client interpolation, and verifies host replay after a live tuning patch.
+Capture the control-capture presentation scenario on a graphical display:
+
+```sh
+godot --path . --fixed-fps 64 --script tools/screenshot.gd -- \
+  --scenario=control_capture --output=/tmp/shove-control-capture
+```
 
 The runner imports script classes, runs every `tests/*_test.gd`, and fails on script errors as well as process failures. Scene smoke drives actual menu/setup/countdown/bot movement/KO/winner/rematch behavior. Simulation runs at a fixed 64 Hz; render callbacks only animate presentation.
 
@@ -119,8 +130,7 @@ Requires a working graphical display; Godot's `--headless` renderer cannot produ
 godot --path . --fixed-fps 64 --script tools/screenshot.gd -- \
   --scenario=all --output=/tmp/shove-captures
 ```
-
-Scenarios: `menu`, `arena`, `bhop`, `impact`, `ko`, `hud`, `tuning`, `debug`, `countdown`, `winner`, `character`, `projectile`, `earth`, `water`, `fire`, `air`, `spike`, `wall_block`, `deflect`. Committed milestone images are in `docs/shots/m3/`. Default output is `user://screenshots`; `--output` accepts an absolute directory. Captures are 1280×800 PNGs. `--hold` keeps the staged window open.
+Scenarios: `menu`, `arena`, `bhop`, `impact`, `ko`, `hud`, `tuning`, `debug`, `countdown`, `winner`, `character`, `projectile`, `earth`, `water`, `fire`, `air`, `spike`, `wall_block`, `deflect`, `tuning_element`, `dummy`, `trajectory`, `control_capture`. Committed milestone images are in `docs/shots/m3/`; five M6 screenshots (`control_lobby`, `control_online_host`, `control_setup`, `control_capture`, `control_winner`) were inspected and accepted in `docs/shots/m6/`. Default output is `user://screenshots`; `--output` accepts an absolute directory. Captures are 1280×800 PNGs. `--hold` keeps the staged window open.
 
 ## Live tuning and replay
 
@@ -132,7 +142,7 @@ Press **F1** or choose **Tuning** from the menu. Search fields by name; scalar s
 - Fixed tick rate and derived/conversion fields remain read-only. `active` controls a move's cast/lock window, not physical dash duration; physical dash duration is not an editable field. Inert fields such as `cost`, recovery speed, and basic/quick-shot gravity are excluded from per-move editing.
 - Online clients can edit local camera/audio/visual/network controls; simulation settings belong to the host and host changes are transmitted authoritatively. World-mutation controls remain offline-only, except host F2/rematch.
 
-Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. Replay format v2 is a clean break and rejects v1 files. After leaving an online session, F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams. Determinism is promised for the same build.
+Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. The current replay format is v3; it rejects v1 and v2 files, with no migration or compatibility shim. Old-format recordings therefore do not load in this build. After leaving an online session, F12 or **Replay latest** plays a supported recording, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams. Determinism is promised for the same build.
 
 - **C** cycles your kit offline and starts a new replay segment. **V** toggles an offline timed projectile-firing dummy; its shots use actual simulation and can contact walls. **B** toggles the neutral-gray curve-shot trajectory preview, also viewable online: it uses current aim and actual strafe, previews a fixed-64-Hz isolated simulation for at most 128 ticks (two seconds by default), and samples at most 128 points. The simulated actor's future commands are idle; preview does not mutate the live World.
 - Avatar shove poses track move windup/active time, and HUD cooldown totals are invalidated when tuning changes.
@@ -153,24 +163,23 @@ Dev mutations (spawn/remove bot or dummy, damage, teleport, cycle kit) and serve
 - Primitive art and analytical collision are intentionally simple.
 - Local prediction intentionally excludes remote-player body collision and combat. The server resolves these and reconciles the client; crowded/laggy brawls remain a playtesting target.
 - Internet/NAT behavior and eight separate human clients have not been exercised.
-- M4 bot acceptance passed after the F3 RNG repair: all 13 headless suites, scene smoke, F3 input/dev-action smoke, natural-combat bot smoke, roster/capture/rematch lifecycle and an impaired three-peer ENet match/rematch. The network run exercises match flow, not every move. Bot combat, roster and tuning-panel runs emitted ObjectDB shutdown warnings with variable instance counts despite no bot runtime errors.
-- M5 acceptance passed: all 14 headless suites, offline scene, rendered nine-action input, F1 tuning/preset scene (per-move value changes real physics, JSON save/load/reset, client edit guard), dev scene, three actual-World shipped-preset checks and baseline network match/rematch passed. Final rendered UI exited cleanly after scene-tree-owned shutdown.
-- The impaired three-peer full-kit ENet scenario used 100 ms one-way latency, 10 ms jitter and 5% loss; it represented all four elements and exercised all nine move slots, with physical outcomes, client projectile interpolation, host tuning propagation and exact replay verification after a live patch. Payloads measured 81,396 bytes for settings and 85,152 for full start, below the 131,072-byte bound; all three M5 captures were inspected and accepted. This is coverage of all nine slots plus all four elements, not all 36 element/slot combinations.
+- Input actions are sampled at simulation steps rather than buffered between them; a brief press/release edge can be missed if scheduling skips that sample, notably during slow motion. Edge buffering is not implemented.
+- M6-specific verification is mostly complete: the 17-suite run, rendered control scene, native-input smoke, baseline and control network scenarios, and inspected M6 screenshots are recorded above. The final full-kit network gate remains pending; see CHANGELOG.md and DECISIONS.md.
+- Some headless smoke exits reported ObjectDB shutdown warnings, and some ENet packets triggered MTU-fragmentation warnings; no script errors were reported in the observed passing gates. These warnings are documented rather than suppressed.
 - Audio samples, loop/mute behavior and playback state were verified. Audible output could not be auditioned here: the WSL environment lacked `libpulse.so.0` and an ALSA device, so Godot fell back to Dummy audio. Use a host with a working audio driver; on Ubuntu/WSLg, check `libpulse0` and the PulseAudio/WSLg connection. `--audio-driver Dummy` is appropriate for automated runs, not audible play.
-- M6's three-lane control-point mode remains unimplemented. Some Godot 4.7.2 Dummy-audio and throwaway smoke exits report WAV/playback/ObjectDB resource warnings despite explicit player cleanup; test runners reject script/runtime errors, and these shutdown warnings are documented separately.
-- Replay determinism is within the same build; cross-version/platform floating-point identity is not promised.
+- Replay determinism is within the same build; cross-version/platform floating-point identity is not promised. Replay records simulation state, not online lobby names/colors.
 
 ## Ten tuning experiments
 
-Change one group at a time, save a named preset, then compare a recorded attack or match:
+Change one item or related field group at a time, save a named preset, and record the build, starting values, scenario, and observed result. These are suggested values for comparative playtests, not balance claims:
 
-1. **Momentum as a weapon:** `MOMENTUM_TRANSFER` **0.85 → 1.4**. Compare standing and full-speed bhop launches.
-2. **Air steering:** `AIR_SPEED_CAP` **0.762 → 1.5 → 3.2**; then try `AIR_ACCELERATION` **10 → 16**. Watch recoverability versus effortless speed gain.
-3. **Slippery landings:** `FRICTION` **4 → 2.5**, then `STOP_SPEED` **2.54 → 1.5**. Compare preserved speed with grounded precision.
-4. **Attack commitment:** `SHOVE_WINDUP` **0.10 → 0.07 / 0.14**, holding the active window fixed. Compare reactive hits with readable telegraphs.
-5. **Early versus late kills:** separately try `BASE_KB` **8 → 10** and `KB_SCALE` **0.16 → 0.22**. Compare low- and high-damage opponents.
-6. **Airtime and recovery:** `GRAVITY` **20.32 → 14**, then `KB_UP` **5 → 7**. Judge whether launches create counterplay or overly long falls.
-7. **Hitstun agency:** `HITSTUN` **0.30 → 0.20 / 0.40** and `HITSTUN_CONTROL` **0.15 → 0.35**. Compare launch readability with recovery control.
-8. **Bot personality:** `BOT_REACTION` **0.12 → 0.06 / 0.25** and `BOT_BHOP_SKILL` **0.75 → 0.35 / 0.95**. Compare aggressive pressure with approachable opponents.
-9. **Juice versus clarity:** `JUICE_HITSTOP_DURATION` **0.055 → 0.025 / 0.08**, then `JUICE_SHAKE_STRENGTH` **0.025 → 0.012 / 0.035**. Toggle either effect off as a readability baseline.
-10. **Network feel:** `NET_LATENCY_MS` **100 → 200**, `NET_PACKET_LOSS` **0.05 → 0.10**, then `NET_INTERPOLATION` **0.10 → 0.15**. Compare correction magnitude, pending depth and remote smoothness.
+1. **Curve-shot shaping:** Compare `PROJECTILE_CURVE_MAX` **0.12 → 0.06 / 0.18** (curve amount) and `PROJECTILE_CURVE_ACCEL` **8 → 5 / 12** (m/s²); record path curvature, wall clearance and hit rate.
+2. **Deflection tradeoff:** Compare `DEFLECT_SPEED_GAIN` **1.12 → 1.0 / 1.3** and `DEFLECT_DAMAGE_GAIN` **1.08 → 1.0 / 1.2** (multipliers); record deflected projectile speed, damage, and whether the caps `DEFLECT_SPEED_CAP` (m/s) / `DEFLECT_DAMAGE_CAP` (damage) are reached.
+3. **Wall counterplay:** Compare `WALL_DURATION` **8 → 4 / 12 s** and `WALL_HP` **3 → 2 / 5**; record blocks, wall lifetime and whether walls dominate lane control.
+4. **Water chain window:** Compare `PROJECTILE_CHAIN_WINDOW` **2 → 1 / 3 s** and `PROJECTILE_CHAIN_STUN` **0.18 → 0.10 / 0.25 s**; record consecutive-hit chains and opponent control time.
+5. **Fire homing:** Compare per-move `FIRE` curve-shot `homing` override **0.12 → 0.06 / 0.2** (use KIT MOVES; this is a homing fraction, bounded by `PROJECTILE_HOMING_MAX=1.0`); record hits against moving targets and missed shots. Clear the sparse override to restore the derived kit value.
+6. **Recovery window:** Compare `RECOVERY_UP_SPEED` **13 → 10 / 16 m/s**, `RECOVERY_HORIZONTAL_SPEED` **10 → 7 / 13 m/s**, and the per-kit `*_RECOVERY_USES` values (integer uses); record successful recoveries and unintended safe returns.
+7. **Kit preset combat:** Compare **Even** against **Earth Heavy** and **Air Chaos**, then record element, preset, move, damage/knockback, and outcome. These presets are real supported profiles; Even changes basic-shot values only.
+8. **Capture pacing:** Compare `CP_CAPTURE_TIME` **2 → 1.5 / 3 s** and `CP_ZONE_RADIUS` **3 → 2.5 / 4 m**; record capture/contest durations and captures per match. Positive capture time and radius are required.
+9. **Ownership score/bonus:** Compare `CP_SCORE_RATE` **4 → 2 / 6 points/s**, `CP_SCORE_TARGET` **100 → 60 / 140 points**, and `CP_KB_BONUS` **1.15 → 1.0 / 1.3**; record score rate, time to target, and measured knockback change. Score target must be positive and bonus at least 1.
+10. **Ring-out and respawn:** Compare `CP_RINGOUT_PENALTY` **2 → 0 / 4 points** and `CP_RESPAWN_DELAY` **2 → 1 / 3 s**; record penalty, inactive delay, safe return and subsequent movement at zero stocks. Ring-out never eliminates a Control player.

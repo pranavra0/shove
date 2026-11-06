@@ -121,6 +121,35 @@ func _test_interpolation_and_discontinuity() -> void:
 	_check(absf(absf(float(rendered.players[2].yaw)) - PI) < 0.001, "yaw interpolation uses shortest arc")
 	_check(prediction.render_world(0.0, 0.0).players[2].position == a.players[2].position, "before history snaps oldest")
 	_check(prediction.render_world(5.0, 0.0).players[2].position == b.players[2].position, "after history snaps newest without extrapolation")
+	var control_a: Dictionary = World.create([1, 2], "control")
+	var control_prediction: RefCounted = Prediction.new()
+	control_prediction.begin(control_a, 1, 2.0)
+	var control_b: Dictionary = control_a.duplicate(true)
+	control_b.tick = 1
+	control_b.control.scores[0] = 4.0
+	control_b.players[2].position.x += 2.0
+	control_b.players[2].team = 0
+	control_prediction.reconcile(control_b, 0, 2.2)
+	rendered = control_prediction.render_world(2.1 + Tuning.NET_INTERPOLATION, 0.0)
+	_check(rendered.players[2].position == control_b.players[2].position, "team discontinuity snaps remote player instead of interpolation")
+	_check(rendered.control.scores == control_a.control.scores, "interpolated control retains the bracket's discrete authoritative score")
+	rendered = control_prediction.render_world(2.2 + Tuning.NET_INTERPOLATION, 0.0)
+	var control_c: Dictionary = control_b.duplicate(true)
+	control_c.tick = 2
+	control_c.players[2].respawn_remaining = 1.0
+	control_c.players[2].position.x += 2.0
+	control_prediction.reconcile(control_c, 0, 2.4)
+	rendered = control_prediction.render_world(2.3 + Tuning.NET_INTERPOLATION, 0.0)
+	_check(rendered.players[2].position == control_c.players[2].position, "respawn timer discontinuity snaps remote player instead of interpolation")
+	var control_d: Dictionary = control_c.duplicate(true)
+	control_d.tick = 3
+	control_d.players[2].respawn_remaining = 0.5
+	control_d.players[2].position.x += 2.0
+	control_prediction.reconcile(control_d, 0, 2.6)
+	rendered = control_prediction.render_world(2.5 + Tuning.NET_INTERPOLATION, 0.0)
+	_check(is_equal_approx(rendered.players[2].position.x, (control_c.players[2].position.x + control_d.players[2].position.x) * 0.5), "positive respawn countdown interpolates without repeated discontinuity snaps")
+	rendered = control_prediction.render_world(2.6 + Tuning.NET_INTERPOLATION, 0.0)
+	_check(rendered.control.scores == control_b.control.scores and rendered.mode == "control", "latest interpolation boundary retains authoritative control scores and mode")
 	_check(prediction.render_world(1.2 + Tuning.NET_INTERPOLATION, 0.0).projectiles.has(3), "new projectile joins membership at its snapshot boundary")
 	var c: Dictionary = b.duplicate(true)
 	c.tick = 2

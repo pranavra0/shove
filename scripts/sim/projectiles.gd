@@ -7,6 +7,8 @@ static func spawn_projectile(world: Dictionary, owner: int, slot: String, aim: V
 	if not world.players.has(owner):
 		return
 	var player: Dictionary = world.players[owner]
+	if not World.is_player_active(player):
+		return
 	var data: Dictionary = Kits.move(str(player.element), slot)
 	var direction: Vector3 = aim.normalized()
 	var horizontal: Vector3 = Vector3(direction.x, 0.0, direction.z)
@@ -57,6 +59,8 @@ static func spawn_wall(world: Dictionary, owner: int, aim: Vector3) -> void:
 	if not world.players.has(owner):
 		return
 	var player: Dictionary = world.players[owner]
+	if not World.is_player_active(player):
+		return
 	var data: Dictionary = Kits.move(str(player.element), "wall")
 	var horizontal_aim: Vector3 = Vector3(aim.x, 0.0, aim.z).normalized()
 	var horizontal_wall: bool = aim.y < float(data.wall_horizontal_threshold)
@@ -126,16 +130,16 @@ static func step(world: Dictionary, active_shoves: Dictionary, commands: Diction
 				best_id = int(wid)
 		var ids: Array = world.players.keys()
 		ids.sort()
-		for victim_id in ids:
+		for victim_id: int in ids:
 			var victim: Dictionary = world.players[victim_id]
-			if int(victim_id) == int(projectile.owner) or int(victim.stocks) <= 0 or float(victim.invuln) > 0.0 or projectile.hit_ids.has(int(victim_id)):
+			if int(victim_id) == int(projectile.owner) or not World.is_player_active(victim) or float(victim.invuln) > 0.0 or projectile.hit_ids.has(int(victim_id)) or not _are_projectile_enemies(world, projectile, victim):
 				continue
 			var t: float = _segment_sphere_t(start, finish, victim.position, float(projectile.size) + float(Tuning.BODY_RADIUS))
 			if t >= 0.0 and t < best_t:
 				best_t = t
 				best_type = "player"
 				best_id = int(victim_id)
-		var arena_t: float = _arena_hit_t(start, finish, float(projectile.size))
+		var arena_t: float = _arena_hit_t(start, finish, float(projectile.size), str(world.get("mode", "ffa")))
 		if arena_t >= 0.0 and arena_t < best_t:
 			best_t = arena_t
 			best_type = "arena"
@@ -171,9 +175,9 @@ static func step(world: Dictionary, active_shoves: Dictionary, commands: Diction
 			var radius: float = float(spike_data.slam_radius)
 			var targets: Array = world.players.keys()
 			targets.sort()
-			for target_id in targets:
+			for target_id: int in targets:
 				var target: Dictionary = world.players[target_id]
-				if int(target_id) == int(projectile.owner) or int(target.stocks) <= 0 or float(target.invuln) > 0.0 or projectile.hit_ids.has(int(target_id)):
+				if int(target_id) == int(projectile.owner) or not World.is_player_active(target) or float(target.invuln) > 0.0 or projectile.hit_ids.has(int(target_id)) or not _are_projectile_enemies(world, projectile, target):
 					continue
 				var offset: Vector3 = target.position - contact
 				if Vector2(offset.x, offset.z).length() > radius or offset.y > float(Tuning.BODY_HEIGHT) + radius:
@@ -220,14 +224,15 @@ static func step(world: Dictionary, active_shoves: Dictionary, commands: Diction
 static func _deflector(world: Dictionary, projectile: Dictionary, active: Dictionary, commands: Dictionary) -> int:
 	var ids: Array = active.keys()
 	ids.sort()
-	for id in ids:
-		if not bool(active[id]) or int(id) == int(projectile.owner) or not world.players.has(int(id)) or not commands.has(int(id)):
+	for id: int in ids:
+		if not bool(active[id]) or id == int(projectile.owner) or not world.players.has(id) or not commands.has(id):
 			continue
-		var player: Dictionary = world.players[int(id)]
+		var player: Dictionary = world.players[id]
+		if not World.is_player_active(player):
+			continue
 		var shove: Dictionary = Kits.move(str(player.element), "shove")
 		if _in_shove(player, projectile.position, float(shove.size) + float(projectile.size), float(shove.reach)):
-			return int(id)
-			return int(id)
+			return id
 	return -1
 
 static func _deflect(projectile: Dictionary, world: Dictionary, owner: int, command: InputCmd) -> void:
@@ -247,9 +252,10 @@ static func _home(world: Dictionary, projectile: Dictionary, velocity: Vector3, 
 	ids.sort()
 	var target_id: int = -1
 	var best: float = INF
-	for id in ids:
+	var owner: Dictionary = world.players.get(int(projectile.owner), {})
+	for id: int in ids:
 		var p: Dictionary = world.players[id]
-		if int(id) == int(projectile.owner) or int(p.stocks) <= 0 or bool(p.on_ground):
+		if int(id) == int(projectile.owner) or not World.is_player_active(p) or bool(p.on_ground) or not World.are_enemies(owner, p):
 			continue
 		var distance: float = projectile.position.distance_squared_to(p.position)
 		if distance < best:
@@ -260,6 +266,10 @@ static func _home(world: Dictionary, projectile: Dictionary, velocity: Vector3, 
 	var target: Vector3 = (world.players[target_id].position - projectile.position).normalized()
 	var speed: float = velocity.length()
 	return velocity.normalized().slerp(target, clampf(float(projectile.homing) * dt, 0.0, 1.0)).normalized() * speed
+
+static func _are_projectile_enemies(world: Dictionary, projectile: Dictionary, target: Dictionary) -> bool:
+	var owner: Dictionary = world.players.get(int(projectile.owner), {})
+	return World.are_enemies(owner, target)
 
 static func _in_shove(player: Dictionary, point: Vector3, radius: float, reach: float) -> bool:
 	var forward: Vector3 = Vector3.FORWARD.rotated(Vector3.UP, float(player.yaw))
@@ -296,10 +306,12 @@ static func _segment_box_t(a: Vector3, b: Vector3, centre: Vector3, size: Vector
 				return -1.0
 	return near_t if near_t <= 1.0 else -1.0
 
-static func _arena_hit_t(a: Vector3, b: Vector3, radius: float) -> float:
-	var earliest: float = -1.0
+static func _arena_hit_t(a: Vector3, b: Vector3, radius: float, mode: String = "ffa") -> float:
 	var platform_size: float = float(Tuning.PLATFORM_SIZE)
 	var platform_thickness: float = float(Tuning.PLATFORM_THICKNESS)
+	if mode == "control":
+		return _segment_box_t(a, b, Vector3(0.0, -platform_thickness * 0.5, 0.0), Vector3(platform_size, platform_thickness, platform_size), radius)
+	var earliest: float = -1.0
 	var t: float = _segment_box_t(a, b, Vector3(0.0, -platform_thickness * 0.5, 0.0), Vector3(platform_size, platform_thickness, platform_size), radius)
 	earliest = _earlier(earliest, t)
 	var center_height: float = float(Tuning.CENTER_HEIGHT)

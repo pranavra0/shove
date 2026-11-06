@@ -5,6 +5,8 @@ static func before_move(world: Dictionary, id: int, cmd: InputCmd, dt: float, pr
 	if not world.players.has(id):
 		return
 	var player: Dictionary = world.players[id]
+	if not World.is_player_active(player):
+		return
 	var step_dt: float = maxf(dt, 0.0)
 	var cooldowns: Dictionary = player.cooldowns
 	for slot in cooldowns.keys():
@@ -77,6 +79,8 @@ static func after_move(world: Dictionary, id: int, was_grounded: bool, predict: 
 	if not world.players.has(id):
 		return
 	var player: Dictionary = world.players[id]
+	if not World.is_player_active(player):
+		return
 	if bool(player.on_ground):
 		if bool(player.down_dashing):
 			if not predict:

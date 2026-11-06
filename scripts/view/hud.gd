@@ -77,9 +77,12 @@ func render_frame(world: Dictionary, flow: Dictionary, local_id: int, camera: Ca
 	_ids = world.get("players", {}).keys()
 	_ids.sort()
 	_speed = 0.0
-	if world.players.has(local_id):
-		var velocity: Vector3 = world.players[local_id].get("velocity", Vector3.ZERO)
-		_speed = Vector2(velocity.x, velocity.z).length()
+	var players: Dictionary = world.get("players", {})
+	if players.has(local_id):
+		var local_player: Dictionary = players[local_id]
+		if World.is_player_active(local_player):
+			var velocity: Vector3 = local_player.get("velocity", Vector3.ZERO)
+			_speed = Vector2(velocity.x, velocity.z).length()
 	_result_remaining = maxf(0.0, _result_remaining - elapsed)
 	_update_flow(phase, flow)
 	_canvas.queue_redraw()
@@ -158,7 +161,13 @@ func invalidate_tuning() -> void:
 
 func _player_color(id: int) -> Color:
 	var player: Dictionary = _world.get("players", {}).get(id, {})
-	return Kits.color(str(player.get("element", "earth")))
+	var color: Color = Kits.color(str(player.get("element", "earth")))
+	var team: int = int(player.get("team", -1))
+	if team >= 0:
+		var colors: Array[Color] = Tuning.CP_TEAM_COLORS
+		if team < colors.size():
+			color = color.lerp(colors[team], 0.72)
+	return color
 
 func _cooldown_total(element: String, slot: String) -> float:
 	if not _cooldown_total_cache.has(element):
@@ -191,6 +200,8 @@ func _draw_hud(canvas: Control) -> void:
 	if _world.is_empty() or _ids.is_empty():
 		return
 	_draw_damage(canvas)
+	if str(_world.get("mode", "ffa")) == "control":
+		_draw_team_scores(canvas)
 	_draw_speed(canvas)
 	_draw_cooldowns(canvas)
 	_draw_indicators(canvas)
@@ -214,17 +225,38 @@ func _draw_damage(canvas: Control) -> void:
 		var damage: float = float(player.get("damage", 0.0))
 		var heat: float = clampf(damage / Tuning.HUD_DAMAGE_HOT_PERCENT, 0.0, 1.0)
 		var color: Color = Tuning.HUD_DAMAGE_STEPS[mini(int(heat * Tuning.HUD_DAMAGE_STEPS.size()), Tuning.HUD_DAMAGE_STEPS.size() - 1)]
-		if stocks <= 0:
+		if not World.is_player_active(player):
 			color = Tuning.HUD_MUTED
 		var x: float = origin_x + index * (width + gap)
 		_text(canvas, Vector2(x, Tuning.HUD_MARGIN + Tuning.HUD_DAMAGE_SIZE), "%d%%" % roundi(damage), Tuning.HUD_DAMAGE_SIZE, color)
+		var stock_color: Color = color
+		if str(_world.get("mode", "ffa")) == "control":
+			stock_color = _player_color(id) if World.is_player_active(player) else Tuning.HUD_MUTED
 		var square_size: float = Tuning.HUD_STOCK_SIZE
 		var stock_gap: float = Tuning.HUD_STOCK_GAP
 		for stock in range(stocks):
 			var box := Rect2(Vector2(x + stock * (square_size + stock_gap), Tuning.HUD_MARGIN + Tuning.HUD_DAMAGE_SIZE + 7.0), Vector2(square_size, square_size))
-			canvas.draw_rect(box, color)
+			canvas.draw_rect(box, stock_color)
 		var accent := Rect2(Vector2(x, Tuning.HUD_MARGIN + top_height - 2.0), Vector2(width, 2.0))
 		canvas.draw_rect(accent, _player_color(id))
+
+func _draw_team_scores(canvas: Control) -> void:
+	var control: Dictionary = _world.get("control", {})
+	var scores: Array = control.get("scores", [0.0, 0.0])
+	var damage_row_height: float = Tuning.HUD_DAMAGE_SIZE + 7.0 + Tuning.HUD_STOCK_SIZE + 4.0
+	var score_baseline: float = Tuning.HUD_MARGIN + damage_row_height + Tuning.HUD_TOP_BACKING_PAD * 2.0 + Tuning.HUD_RESULT_SIZE
+	for team in range(2):
+		var color: Color = _team_color(team)
+		var score: float = float(scores[team]) if team < scores.size() else 0.0
+		var label: String = "TEAM %d  %03d" % [team + 1, roundi(score)]
+		var position: Vector2 = Vector2(Tuning.HUD_MARGIN, score_baseline)
+		if team == 1:
+			position.x = _layout_size.x - Tuning.HUD_MARGIN - _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, Tuning.HUD_RESULT_SIZE).x
+		_text(canvas, position, label, Tuning.HUD_RESULT_SIZE, color)
+
+func _team_color(team: int) -> Color:
+	var colors: Array[Color] = Tuning.CP_TEAM_COLORS
+	return colors[team] if team >= 0 and team < colors.size() else Tuning.HUD_TEXT
 
 func _draw_speed(canvas: Control) -> void:
 	var x: float = Tuning.HUD_MARGIN
@@ -285,7 +317,7 @@ func _draw_indicators(canvas: Control) -> void:
 		if int(id) == _local_id:
 			continue
 		var player: Dictionary = _world.players[id]
-		if int(player.get("stocks", 0)) <= 0:
+		if not World.is_player_active(player):
 			continue
 		var position: Vector3 = player.get("position", Vector3.ZERO)
 		var behind: bool = _camera.is_position_behind(position)
@@ -310,6 +342,8 @@ func _draw_indicators(canvas: Control) -> void:
 		canvas.draw_colored_polygon(PackedVector2Array([tip, point + tangent * Tuning.HUD_INDICATOR_SIZE * 0.55, point - tangent * Tuning.HUD_INDICATOR_SIZE * 0.55]), _player_color(int(id)))
 
 func _draw_result(canvas: Control) -> void:
+	if str(_world.get("mode", "ffa")) == "control":
+		return
 	if _result.is_empty() or (_result_remaining <= 0.0 and not _result_persistent):
 		return
 	_text(canvas, Vector2(_layout_size.x * 0.5, _layout_size.y * Tuning.HUD_RESULT_Y), _result, Tuning.HUD_RESULT_SIZE, Tuning.HUD_TEXT, true)
