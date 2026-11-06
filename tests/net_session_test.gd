@@ -24,17 +24,28 @@ func _run() -> void:
 	session._receive_snapshot({"epoch": 1, "serial": 1, "world": terminal, "flow": {"phase": "winner", "winner": 2}, "ack": 6, "echo": 0.0})
 	assert(session.world == terminal, "A terminal snapshot must discard unacknowledged movement instead of replaying beyond the final state")
 	assert(session._prediction.pending.is_empty() and session.stats.input_depth == 0)
+	var malformed: Dictionary = terminal.duplicate(true)
+	malformed.players[1].element = "invalid"
+	session._receive_snapshot({"epoch": 1, "serial": 2, "world": malformed, "flow": {"phase": "playing"}, "ack": 6, "echo": 0.0})
+	assert(session.world == terminal, "Network snapshots reject malformed element fields without changing authoritative state")
 	var world: Dictionary = world_script.create([1, 2, 3, 4, 5, 6, 7, 8])
+	for id in world.players:
+		world_script.set_element(world, id, ["earth", "water", "fire", "air"][int(id) % 4])
 	for tick in range(90):
 		var commands: Dictionary = {}
 		for id in world.players:
 			var angle: float = float(id) * 0.7 + float(tick) * 0.01
-			commands[id] = InputCmd.new(Vector2(cos(angle), sin(angle)), tick % 7 == 0, tick % 39 == 0, angle, tick)
+			var command: InputCmd = InputCmd.new(Vector2(cos(angle), sin(angle)), tick % 7 == 0, tick % 39 == 0, angle, tick)
+			command.pitch = 0.25
+			command.moves = 255 if tick % 9 == 0 else InputCmd.BASIC_SHOT | InputCmd.QUICK_FIRE
+			commands[id] = command
 		world = world_script.step(world, commands, tune.FIXED_DELTA)
 	var payload := {"epoch": 1, "serial": 4, "world": world, "flow": {"phase": "playing"}, "ack": 90, "echo": 7.0}
 	var packet: PackedByteArray = session._encode_unreliable(payload)
-	assert(packet.size() < 1280, "Eight-player unreliable snapshots must leave room for RPC headers below ENet's MTU")
+	var raw: PackedByteArray = var_to_bytes(payload)
+	assert(packet.size() <= 8192, "Eight-player full-kit snapshots remain within the compressed packet bound; ENet may fragment")
+	assert(raw.size() <= 65536, "Eight-player full-kit snapshots remain within the bounded raw decode limit")
 	assert(session._decode_unreliable(packet) == payload)
-	print("PASS network terminal authority/unacked flush/eight-player MTU/typed packet roundtrip bytes=", packet.size())
+	print("PASS network terminal authority/unacked flush/eight-player bounded packet/typed packet roundtrip compressed=", packet.size(), " raw=", raw.size())
 	session.free()
 	quit(0)

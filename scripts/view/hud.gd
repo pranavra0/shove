@@ -28,9 +28,11 @@ var _speed: float = 0.0
 var _result: String = ""
 var _result_remaining: float = 0.0
 var _result_persistent: bool = false
+var _cooldown_total_cache: Dictionary = {}
 
-const COOLDOWN_SLOTS: Array[String] = ["shove"]
-const COOLDOWN_GLYPHS: Dictionary = {"shove": "F"}
+const COOLDOWN_SLOTS: Array[String] = ["basic_shot", "curve_shot", "quick_fire", "shove", "high_jump", "down_dash", "wall", "h_dash", "recovery"]
+const COOLDOWN_GLYPHS: Dictionary = {"basic_shot": "LMB", "curve_shot": "RMB", "quick_fire": "Q", "shove": "F", "high_jump": "E", "down_dash": "Ctrl", "wall": "R", "h_dash": "Shift", "recovery": "Space"}
+
 
 func setup(app: Node) -> void:
 	_app = app
@@ -101,10 +103,19 @@ func consume(events: Array) -> void:
 		if _consumed_events.has(fingerprint):
 			continue
 		_consumed_events[fingerprint] = true
-		if str(event.get("type", "")) == "ko":
-			_result = "%s  K.O." % _player_name(int(event.get("player", -1)))
-			_result_remaining = Tuning.HUD_KO_DURATION
-			_result_persistent = false
+		match str(event.get("type", "")):
+			"ko":
+				_result = "%s  K.O." % _player_name(int(event.get("player", -1)))
+				_result_remaining = Tuning.HUD_KO_DURATION
+				_result_persistent = false
+			"wall_block":
+				_result = "WALL BLOCK"
+				_result_remaining = Tuning.HUD_BANNER_DURATION
+				_result_persistent = false
+			"deflect":
+				_result = "PROJECTILE DEFLECTED"
+				_result_remaining = Tuning.HUD_BANNER_DURATION
+				_result_persistent = false
 
 func _clear_round() -> void:
 	_last_tick = -1
@@ -142,10 +153,21 @@ func _update_flow(phase: String, flow: Dictionary) -> void:
 				_result_persistent = false
 	_phase = phase
 
+func invalidate_tuning() -> void:
+	_cooldown_total_cache.clear()
+
 func _player_color(id: int) -> Color:
-	if _app.get("network") != null and _app.network.active and _app.network.members.has(id):
-		return Tuning.HUD_PLAYER_COLORS[posmod(int(_app.network.members[id].color), Tuning.HUD_PLAYER_COLORS.size())]
-	return Tuning.HUD_PLAYER_COLORS[posmod(id - 1, Tuning.HUD_PLAYER_COLORS.size())]
+	var player: Dictionary = _world.get("players", {}).get(id, {})
+	return Kits.color(str(player.get("element", "earth")))
+
+func _cooldown_total(element: String, slot: String) -> float:
+	if not _cooldown_total_cache.has(element):
+		var totals: Dictionary = {}
+		for move_slot: String in COOLDOWN_SLOTS:
+			totals[move_slot] = float(Kits.move(element, move_slot).get("cooldown", 0.0))
+		_cooldown_total_cache[element] = totals
+	var cached: Dictionary = _cooldown_total_cache[element]
+	return float(cached.get(slot, 0.0))
 
 func _player_name(id: int) -> String:
 	if id == _local_id:
@@ -182,7 +204,7 @@ func _draw_damage(canvas: Control) -> void:
 	var width: float = minf(Tuning.HUD_PLAYER_WIDTH, (_layout_size.x - Tuning.HUD_MARGIN * 2.0 - gap * (count - 1)) / count)
 	var row_width: float = width * count + gap * (count - 1)
 	var origin_x: float = (_layout_size.x - row_width) * 0.5
-	var top_height: float = Tuning.HUD_DAMAGE_SIZE + 7.0 + Tuning.HUD_STOCK_SIZE
+	var top_height: float = Tuning.HUD_DAMAGE_SIZE + 7.0 + Tuning.HUD_STOCK_SIZE + 4.0
 	var top_backing := Rect2(Vector2(origin_x - Tuning.HUD_TOP_BACKING_PAD, Tuning.HUD_MARGIN - Tuning.HUD_TOP_BACKING_PAD), Vector2(row_width + Tuning.HUD_TOP_BACKING_PAD * 2.0, top_height + Tuning.HUD_TOP_BACKING_PAD * 2.0))
 	canvas.draw_rect(top_backing, Tuning.HUD_TOP_BACKING_COLOR)
 	for index in range(count):
@@ -201,6 +223,8 @@ func _draw_damage(canvas: Control) -> void:
 		for stock in range(stocks):
 			var box := Rect2(Vector2(x + stock * (square_size + stock_gap), Tuning.HUD_MARGIN + Tuning.HUD_DAMAGE_SIZE + 7.0), Vector2(square_size, square_size))
 			canvas.draw_rect(box, color)
+		var accent := Rect2(Vector2(x, Tuning.HUD_MARGIN + top_height - 2.0), Vector2(width, 2.0))
+		canvas.draw_rect(accent, _player_color(id))
 
 func _draw_speed(canvas: Control) -> void:
 	var x: float = Tuning.HUD_MARGIN
@@ -216,22 +240,40 @@ func _draw_cooldowns(canvas: Control) -> void:
 		return
 	var player: Dictionary = _world.players[_local_id]
 	var slots: Dictionary = player.get("cooldowns", {})
+	var element: String = str(player.get("element", "earth"))
 	var bar_width: float = Tuning.HUD_COOLDOWN_WIDTH
-	var x: float = _layout_size.x - Tuning.HUD_MARGIN - bar_width
-	var y: float = _layout_size.y - Tuning.HUD_MARGIN - Tuning.HUD_COOLDOWN_HEIGHT
+	var gap: float = Tuning.HUD_COOLDOWN_GAP
+	var total_width: float = bar_width * COOLDOWN_SLOTS.size() + gap * (COOLDOWN_SLOTS.size() - 1)
+	var start_x: float = (_layout_size.x - total_width) * 0.5
+	var bar_y: float = _layout_size.y - Tuning.HUD_COOLDOWN_BOTTOM_MARGIN - Tuning.HUD_COOLDOWN_HEIGHT
+	var glyph_baseline: float = bar_y - Tuning.HUD_COOLDOWN_GLYPH_GAP
+	var padding: float = Tuning.HUD_COOLDOWN_PADDING
+	var font_size: int = Tuning.HUD_COOLDOWN_FONT_SIZE
+	var backing := Rect2(
+		Vector2(start_x - padding, glyph_baseline - font_size - padding),
+		Vector2(total_width + padding * 2.0, font_size + Tuning.HUD_COOLDOWN_GLYPH_GAP + Tuning.HUD_COOLDOWN_HEIGHT + padding * 2.0)
+	)
+	canvas.draw_rect(backing, Tuning.HUD_COOLDOWN_BACKING_COLOR)
 	for slot_index in range(COOLDOWN_SLOTS.size()):
 		var slot: String = COOLDOWN_SLOTS[slot_index]
-		var remaining: float = float(slots.get(slot, player.get("cooldown", 0.0)))
-		var ratio: float = clampf(remaining / maxf(Tuning.SHOVE_COOLDOWN, 0.001), 0.0, 1.0)
+		var total: float = _cooldown_total(element, slot)
+		var fallback: float = float(player.get("cooldown", 0.0)) if slot == "shove" else 0.0
+		var remaining: float = float(slots.get(slot, fallback))
+		var ratio: float = clampf(remaining / maxf(total, 0.001), 0.0, 1.0)
+		var unavailable: bool = slot == "recovery" and not bool(player.get("on_ground", false)) and int(player.get("recovery_used", 0)) >= Kits.recovery_uses(element)
+		var color: Color = Tuning.HUD_MUTED if unavailable else _player_color(_local_id)
+		if unavailable:
+			ratio = 1.0
+		var x: float = start_x + slot_index * (bar_width + gap)
 		var glyph: String = COOLDOWN_GLYPHS[slot]
-		var bar_y: float = y - slot_index * Tuning.HUD_COOLDOWN_ROW_GAP
-		_text(canvas, Vector2(x - Tuning.HUD_COOLDOWN_GLYPH_GAP, bar_y + Tuning.HUD_COOLDOWN_HEIGHT), glyph, Tuning.HUD_COOLDOWN_FONT_SIZE, Tuning.HUD_TEXT)
+		var glyph_width: float = _font.get_string_size(glyph, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		_text(canvas, Vector2(x + (bar_width - glyph_width) * 0.5, glyph_baseline), glyph, font_size, color)
 		var bar := Rect2(Vector2(x, bar_y), Vector2(bar_width, Tuning.HUD_COOLDOWN_HEIGHT))
-		canvas.draw_rect(bar, Color(Tuning.HUD_TEXT, 0.7), ratio <= 0.0)
 		if ratio > 0.0:
-			canvas.draw_rect(bar, Color(Tuning.HUD_TEXT, 0.75))
-			bar.size.x *= ratio
-			canvas.draw_rect(bar, Tuning.HUD_MUTED)
+			var fill: Rect2 = bar
+			fill.size.x *= ratio
+			canvas.draw_rect(fill, color)
+		canvas.draw_rect(bar, color, false)
 
 func _draw_indicators(canvas: Control) -> void:
 	if not is_instance_valid(_camera):

@@ -44,17 +44,10 @@ func _step_local(world: Dictionary, cmd: InputCmd, dt: float) -> Dictionary:
 	result.events = []
 	if not world.players.has(_id):
 		return result
-	var before: Dictionary = world.players[_id]
-	var isolated: Dictionary = {"tick": world.tick, "players": {_id: before.duplicate(true)}, "events": []}
-	var stepped: Dictionary = World.step(isolated, {_id: cmd}, dt)
-	var player: Dictionary = stepped.players[_id]
-	# A client may animate a windup, but cannot award damage, hits, or a KO.
-	if player.stocks != before.stocks:
-		player = before.duplicate(true)
-	for field in ["damage", "stocks", "attack_hits", "spawn"]:
-		player[field] = before[field].duplicate(true) if before[field] is Array or before[field] is Dictionary else before[field]
+	# The simulation helper predicts only this player; entities and authoritative combat
+	# state remain the untouched deep copy from the latest server snapshot.
+	var player: Dictionary = World.predict_player(world, _id, cmd, dt)
 	result.players[_id] = player
-	result.tick = stepped.tick
 	return result
 
 func reconcile(world: Dictionary, ack: int, now: float) -> void:
@@ -116,18 +109,42 @@ func render_world(now: float, delta: float) -> Dictionary:
 					break
 		var span: float = float(right.time) - float(left.time)
 		var weight: float = clampf((target - float(left.time)) / span, 0.0, 1.0) if span > 0.0 else 1.0
-		for id in right.world.players:
+		var left_world: Dictionary = left.world
+		var right_world: Dictionary = right.world
+		for id in right_world.players:
 			if int(id) == _id:
 				continue
-			var b: Dictionary = right.world.players[id]
+			var b: Dictionary = right_world.players[id]
 			var remote: Dictionary = b.duplicate(true)
-			if left.world.players.has(id):
-				var a: Dictionary = left.world.players[id]
+			if left_world.players.has(id):
+				var a: Dictionary = left_world.players[id]
 				if not _discontinuous(a, b):
 					remote.position = a.position.lerp(b.position, weight)
 					remote.velocity = a.velocity.lerp(b.velocity, weight)
 					remote.yaw = lerp_angle(float(a.yaw), float(b.yaw), weight)
 			result.players[id] = remote
+		var left_projectiles: Dictionary = left_world.get("projectiles", {})
+		var right_projectiles: Dictionary = right_world.get("projectiles", {})
+		var discrete_world: Dictionary = right_world if weight >= 1.0 else left_world
+		var rendered_projectiles: Dictionary = discrete_world.get("projectiles", {}).duplicate(true)
+		for id in rendered_projectiles:
+			if not left_projectiles.has(id) or not right_projectiles.has(id):
+				continue
+			var a_projectile: Dictionary = left_projectiles[id]
+			var b_projectile: Dictionary = right_projectiles[id]
+			if int(a_projectile.owner) != int(b_projectile.owner) or str(a_projectile.behavior) != str(b_projectile.behavior):
+				continue
+			var rendered: Dictionary = rendered_projectiles[id]
+			var from_position: Vector3 = a_projectile.position
+			var to_position: Vector3 = b_projectile.position
+			var from_velocity: Vector3 = a_projectile.velocity
+			var to_velocity: Vector3 = b_projectile.velocity
+			rendered.position = from_position.lerp(to_position, weight)
+			rendered.velocity = from_velocity.lerp(to_velocity, weight)
+			rendered_projectiles[id] = rendered
+		result["projectiles"] = rendered_projectiles
+		var historical_walls: Dictionary = discrete_world.get("walls", {})
+		result["walls"] = historical_walls.duplicate(true)
 	if result.players.has(_id):
 		result.players[_id].position += _offset
 	return result

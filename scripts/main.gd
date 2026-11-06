@@ -40,11 +40,16 @@ var network: NetSession
 var network_ui: NetworkLobby
 var _network_view_epoch: int = -1
 var _receiving_network_settings: bool = false
+var kit_entities: KitEntitiesView
+var selected_element: String = "earth"
 
 func _ready() -> void:
 	_build_world()
 	_build_camera()
 	_build_hud()
+	kit_entities = KitEntitiesView.new()
+	kit_entities.name = "KitEntities"
+	add_child(kit_entities)
 	juice = JuiceView.new()
 	add_child(juice)
 	synth = SynthAudio.new()
@@ -86,6 +91,7 @@ func show_menu() -> void:
 	paused = false
 	flow = MatchSim.create()
 	world = {}
+	kit_entities.clear()
 	juice.clear()
 	game_hud.reset_match()
 	bot_ids.clear()
@@ -114,6 +120,16 @@ func _show_offline_setup() -> void:
 	solo.text = "Solo practice (no opponents)"
 	solo.toggled.connect(func(enabled: bool) -> void: bots.disabled = enabled)
 	menu_panel.add_child(solo)
+	var element_picker := OptionButton.new()
+	element_picker.name = "Element"
+	for element: String in Kits.ELEMENTS:
+		element_picker.add_item(element.capitalize())
+		if element == selected_element:
+			element_picker.select(element_picker.item_count - 1)
+	element_picker.item_selected.connect(func(index: int) -> void:
+		selected_element = Kits.ELEMENTS[index]
+	)
+	menu_panel.add_child(element_picker)
 	_menu_button("Start", "Start", func() -> void: start_offline(0 if solo.button_pressed else bots.get_selected_id()))
 	_menu_button("Back", "Back", show_menu)
 
@@ -133,6 +149,7 @@ func start_match(ids: Array) -> void:
 	_stop_replay()
 	tuning_panel.set_open(false)
 	_clear_players()
+	kit_entities.clear()
 	juice.clear()
 	game_hud.reset_match()
 	_last_countdown = -1
@@ -140,9 +157,15 @@ func start_match(ids: Array) -> void:
 	bot_ids.clear()
 	bot_memory.clear()
 	world = World.create(ids)
+	var roster_rng := RandomNumberGenerator.new()
+	roster_rng.seed = 0x5EED + int(ids.hash())
 	for player_id in world.players:
-		player_views[player_id] = _build_player(int(player_id))
-		if int(player_id) != local_id:
+		var id: int = int(player_id)
+		if not network.active:
+			var element: String = selected_element if id == local_id else Kits.ELEMENTS[roster_rng.randi_range(0, Kits.ELEMENTS.size() - 1)]
+			World.set_element(world, id, element)
+		player_views[player_id] = _build_player(id)
+		if id != local_id:
 			bot_ids.append(player_id)
 	bot_ids.sort()
 	yaw = float(world.players[local_id].yaw) if world.players.has(local_id) else 0.0
@@ -157,10 +180,32 @@ func start_match(ids: Array) -> void:
 
 func sample_input() -> InputCmd:
 	var tick: int = int(world.get("tick", 0))
+	var cmd := InputCmd.new(Vector2.ZERO, false, false, yaw, tick)
 	if not _can_control() or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-		return InputCmd.new(Vector2.ZERO, false, false, yaw, tick)
-	var axis := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	return InputCmd.new(axis, Input.is_action_pressed("jump"), Input.is_action_pressed("shove"), yaw, tick)
+		return cmd
+	cmd.move = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	cmd.jump = Input.is_action_pressed("jump")
+	cmd.shove = Input.is_action_pressed("shove")
+	cmd.pitch = clampf(pitch, -PI * 0.5, PI * 0.5)
+	var moves: int = 0
+	if Input.is_action_pressed("basic_shot"):
+		moves |= InputCmd.BASIC_SHOT
+	if Input.is_action_just_released("curve_shot"):
+		moves |= InputCmd.CURVE_SHOT
+	if Input.is_action_pressed("quick_fire"):
+		moves |= InputCmd.QUICK_FIRE
+	if Input.is_action_just_pressed("high_jump"):
+		moves |= InputCmd.HIGH_JUMP
+	if Input.is_action_just_pressed("down_dash"):
+		moves |= InputCmd.DOWN_DASH
+	if Input.is_action_just_pressed("wall"):
+		moves |= InputCmd.WALL
+	if Input.is_action_just_pressed("h_dash"):
+		moves |= InputCmd.H_DASH
+	if Input.is_action_just_pressed("recovery"):
+		moves |= InputCmd.RECOVERY
+	cmd.moves = moves
+	return cmd
 
 func _physics_process(_delta: float) -> void:
 	_apply_rebuilds()
@@ -266,6 +311,7 @@ func _process(delta: float) -> void:
 	gizmos.render_frame(world)
 	network_ui.render_frame()
 	if world.is_empty():
+		kit_entities.clear()
 		synth.update_motion(0.0, false, delta)
 		_update_camera(delta)
 		game_hud.render_frame(world, flow, local_id, camera, delta)
@@ -273,6 +319,7 @@ func _process(delta: float) -> void:
 	if not network.active or juice.freeze_remaining <= 0.0:
 		for player_id in world.players:
 			player_views[player_id].render_state(world.players[player_id], delta, presentation_time)
+	kit_entities.render_world(world)
 	_update_camera(delta)
 	juice.render_frame(world, local_id, camera, delta)
 	game_hud.render_frame(world, flow, local_id, camera, delta)
@@ -403,9 +450,10 @@ func _build_player(player_id: int) -> Node3D:
 	return view
 
 func _player_color(player_id: int) -> Color:
-	if network != null and network.active and network.members.has(player_id):
-		return Tuning.HUD_PLAYER_COLORS[posmod(int(network.members[player_id].color), Tuning.HUD_PLAYER_COLORS.size())]
-	return Tuning.HUD_PLAYER_COLORS[posmod(player_id - 1, Tuning.HUD_PLAYER_COLORS.size())]
+	return Kits.color(_world_element(player_id))
+
+func _world_element(player_id: int) -> String:
+	return str(world.get("players", {}).get(player_id, {}).get("element", "earth"))
 
 func _build_camera() -> void:
 	camera_pivot = Node3D.new()
@@ -474,6 +522,125 @@ func _build_hud() -> void:
 	menu_panel.add_theme_constant_override("separation", 10)
 	margin.add_child(menu_panel)
 
+func _capture_command(id: int, move_bits: int = 0, is_shoving: bool = false, command_yaw: float = 0.0, command_pitch: float = 0.0) -> InputCmd:
+	var command := InputCmd.new(Vector2.ZERO, false, is_shoving, command_yaw, int(world.get("tick", 0)))
+	command.moves = move_bits
+	command.pitch = command_pitch
+	return command
+
+func _capture_sim_step(commands: Dictionary) -> void:
+	world = World.step(world, commands, Tuning.FIXED_DELTA)
+
+func _capture_kit_scenario(scenario: String) -> Variant:
+	selected_element = scenario if Kits.ELEMENTS.has(scenario) else ("fire" if scenario == "spike" else "earth")
+	start_offline(1)
+	flow.phase = "playing"
+	menu_overlay.hide()
+	for id in world.players:
+		var player: Dictionary = world.players[id]
+		player.position = Vector3(6.0, Tuning.BODY_HEIGHT * 0.5, 8.0) if int(id) == local_id else Vector3(12.0, Tuning.BODY_HEIGHT * 0.5, 8.0)
+		player.velocity = Vector3.ZERO
+		player.yaw = 0.0
+		player.on_ground = true
+	var local: Dictionary = world.players[local_id]
+	var shot_owner: int = local_id
+	var slot_bit: int = InputCmd.CURVE_SHOT if scenario == "spike" else InputCmd.BASIC_SHOT
+	if scenario == "wall_block":
+		_capture_sim_step({local_id: _capture_command(local_id, InputCmd.WALL)})
+		var wall_spawn_observed: bool = false
+		for windup_frame in range(12):
+			for event: Dictionary in world.events:
+				if str(event.get("type", "")) == "wall_spawn":
+					wall_spawn_observed = true
+			if wall_spawn_observed:
+				break
+			_capture_sim_step({})
+		if world.get("walls", {}).is_empty() or not wall_spawn_observed:
+			return {"available": false, "reason": "World.step did not create the requested wall after its activation event."}
+	if scenario == "deflect":
+		shot_owner = 2
+		world.players[2].position = Vector3(6.0, Tuning.BODY_HEIGHT * 0.5, 4.5)
+		world.players[2].yaw = PI
+		local.position.y = Tuning.BODY_HEIGHT * 0.5
+		local.yaw = 0.0
+	if scenario == "spike":
+		local.position.y = 3.5
+		local.on_ground = false
+	var command_pitch: float = -1.2 if scenario == "spike" else 0.0
+	var observed_spike: bool = scenario != "spike"
+	var projectile_spawn_observed: bool = false
+	var wall_block_observed: bool = false
+	var pre_block_world: Dictionary = {}
+	var transferred: bool = false
+	if scenario == "wall_block":
+		shot_owner = 2
+		world.players[2].position = Vector3(6.0, Tuning.BODY_HEIGHT * 0.5, 2.0)
+		world.players[2].yaw = PI
+	for frame in range(96):
+		if scenario == "wall_block":
+			for projectile_id in world.projectiles:
+				var projectile: Dictionary = world.projectiles[projectile_id]
+				for wall_id in world.walls:
+					var wall: Dictionary = world.walls[wall_id]
+					if projectile.position.distance_to(wall.position) < 1.3:
+						pre_block_world = world.duplicate(true)
+						break
+		var commands: Dictionary = {}
+		if frame == 0:
+			commands[shot_owner] = _capture_command(shot_owner, slot_bit, false, float(world.players[shot_owner].yaw), command_pitch)
+		if scenario == "deflect" and frame >= 2:
+			commands[local_id] = _capture_command(local_id, 0, true, float(local.yaw))
+		_capture_sim_step(commands)
+		for event: Dictionary in world.events:
+			if str(event.get("type", "")) == "projectile_spawn":
+				projectile_spawn_observed = true
+		var projectiles: Dictionary = world.get("projectiles", {})
+		if scenario == "spike":
+			for projectile_id in projectiles:
+				if str(projectiles[projectile_id].get("behavior", "")) == "spike":
+					observed_spike = true
+		if scenario == "wall_block":
+			for event: Dictionary in world.events:
+				if str(event.get("type", "")) == "wall_block":
+					wall_block_observed = true
+					if not pre_block_world.is_empty():
+						world = pre_block_world
+					game_hud.consume([event])
+					break
+			if wall_block_observed:
+				break
+		if scenario == "deflect":
+			for projectile_id in projectiles:
+				if int(projectiles[projectile_id].get("owner", -1)) == local_id and int(projectiles[projectile_id].get("deflections", 0)) > 0:
+					transferred = true
+					break
+			if transferred:
+				break
+		if scenario in ["projectile", "earth", "water", "fire", "air", "spike"] and projectile_spawn_observed and not projectiles.is_empty():
+			break
+	if scenario == "wall_block" and (world.walls.is_empty() or not wall_block_observed or world.projectiles.is_empty()):
+		return {"available": false, "reason": "World.step did not create and block the staged projectile at the wall."}
+	if scenario == "deflect" and not transferred:
+		return {"available": false, "reason": "World.step did not deflect and transfer projectile ownership."}
+	if not observed_spike:
+		return {"available": false, "reason": "World.step did not produce an actual spike projectile."}
+	if scenario in ["projectile", "earth", "water", "fire", "air", "spike"] and world.projectiles.is_empty():
+		return {"available": false, "reason": "World.step did not produce an actual projectile."}
+	if scenario in ["projectile", "earth", "water", "fire", "air", "spike"]:
+		for flight_tick in range(6):
+			_capture_sim_step({})
+		if world.projectiles.is_empty():
+			return {"available": false, "reason": "Projectile did not survive the staged flight interval."}
+	if scenario != "wall_block":
+		game_hud.consume(world.events)
+	for id in world.players:
+		player_views[id].render_state(world.players[id], 0.0, presentation_time)
+	kit_entities.render_world(world)
+	camera.global_position = Vector3(0.0, 6.0, 0.0) if scenario == "wall_block" else Vector3(1.0, 6.0, 14.0)
+	camera.look_at(Vector3(6.0, 1.0, 6.0))
+	game_hud.render_frame(world, flow, local_id, camera, 0.0)
+	return true
+
 func capture_scenario(scenario: String) -> Variant:
 	# Deterministic presentation staging; never used by a live match.
 	set_physics_process(false)
@@ -486,6 +653,8 @@ func capture_scenario(scenario: String) -> Variant:
 		camera.global_position = Tuning.CAMERA_MENU_POSITION
 		camera.look_at(Tuning.CAMERA_MENU_TARGET)
 		return true
+	if scenario in ["projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect"]:
+		return _capture_kit_scenario(scenario)
 	start_offline(3 if scenario == "hud" else (0 if scenario == "character" else (1 if scenario == "impact" else 5)))
 	flow.phase = "playing"
 	menu_overlay.hide()
@@ -747,6 +916,7 @@ func _on_network_world(next_world: Dictionary, next_flow: Dictionary) -> void:
 	flow = next_flow
 	if world.is_empty():
 		_clear_players()
+		kit_entities.clear()
 		juice.clear()
 		game_hud.reset_match()
 		network_ui.show_lobby()

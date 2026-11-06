@@ -16,8 +16,15 @@ Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practi
 |---|---|
 | WASD | Camera-relative movement |
 | Mouse | Third-person orbit/aim |
-| Space (hold) | Auto-bhop |
-| E / left mouse | Shove |
+| Space (hold) | Auto-hop; releasing and repressing in air recovers an air jump |
+| LMB | Basic attack |
+| RMB | Release curve |
+| Q | Quick attack |
+| F | Shove |
+| E | High jump |
+| Ctrl | Air slam |
+| R | Wall (aim down for a horizontal wall) |
+| Shift | Dash |
 | Escape | Pause offline; open a non-pausing menu online |
 | F1 | Live tuning panel (simulation continues) |
 | F2 | Reset offline match / host starts an online rematch |
@@ -27,6 +34,18 @@ Choose **Play vs Bots**, select 1–7 bots, then **Start**. Select **Solo practi
 | F9 / F10 | Add 100% damage / teleport to center (offline) |
 | F11 / F12 | Save replay / replay it after leaving an online session |
 | M | Toggle music during gameplay |
+The F1–F12, M and Escape development/menu controls are preserved.
+Four kits define distinct combat styles:
+
+- **Earth:** slow, large projectiles; strong knockback; walls and slam.
+- **Water:** fast, quick attacks; consecutive hits cause stun within 2 seconds.
+- **Fire:** highest damage and lowest knockback scale; slight air-target homing; slow wall cooldown.
+- **Air:** fast, small shots with the highest knockback scale; momentum-preserving dash and two recoveries.
+
+The element is selected in offline setup or the online profile, and is part of simulation state.
+Each kit provides nine moves: basic shot, curve shot, quick fire, shove, high jump, down dash/slam, wall, horizontal dash and recovery. Basic shot, quick fire and shove are held controls; curve shot activates on release, while E, Ctrl, R and Shift activate on press. Releasing and repressing Space in air can request a recovery. Move requests are prioritized, cooldown-gated, and use the selected kit's move data. Aim pitch distinguishes curve-shot behavior: aiming down produces a spike and aiming up a lob. Walls are placed horizontally or vertically according to aim, and projectiles can be deflected by shove; deflection transfers ownership and increases speed/damage up to configured caps.
+
+Movement scalars, per-element move values, projectile multipliers and recovery counts are defined by the simulation kit/tuning data. These are current implementation facts, not evidence that every per-move/per-element value has been exposed through the live editor or verified across the network.
 
 The portable default renderer is Compatibility/OpenGL. The default white-model presentation uses flat outlined primitives, a subtle world-space grid, hard directional shadows and a two-tone horizon. Decorative particles are disabled; gameplay hitstop, small shake and speed FOV remain toggleable in F1.
 
@@ -42,7 +61,7 @@ Launch two instances with `godot --path .`.
 
 Both instances must run the same project/engine revision. This is a direct-IP listen server, not an Internet matchmaking/NAT-traversal service. Online Escape menus release local input without pausing the server. Only the focused window captures the mouse.
 
-The server simulates at 64 Hz and sends snapshots at `NET_SNAPSHOT_RATE` (32 Hz by default). Clients predict their own movement/windup, reconcile unacknowledged commands, and interpolate remote players with `NET_INTERPOLATION` (100 ms by default). Shove hit detection and all damage/stocks stay on the server.
+The server simulates at 64 Hz and sends snapshots at `NET_SNAPSHOT_RATE` (32 Hz by default). Clients predict their own movement and attack windup, reconcile unacknowledged commands, and interpolate remote players and authoritative projectiles/walls with `NET_INTERPOLATION` (100 ms by default). Projectile and wall simulation, hit detection and all damage/stocks are server-authoritative.
 
 F1 exposes `NET_LATENCY_MS`, `NET_JITTER_MS` and `NET_PACKET_LOSS` (a fraction: `0.05` means 5%). These affect unreliable input/snapshot delivery; reliable lobby/start/events/final results remain reliable. The overlay shows RTT, received snapshot rate, correction magnitude, pending input depth and simulated drops.
 
@@ -68,6 +87,14 @@ python3 tools/net_test.py --godot godot --gui \
 
 Choose a new, empty capture directory for each network run. This driver uses ordinary bot commands, not staged network outcomes. `--expected-clients=1..7` can change the headless peer count; the GUI driver intentionally uses two windows.
 
+The rendered kit/input/replay smoke drives the actual main scene and requires a graphical display with the game window focused; it is deliberately not headless because it exercises focused input capture and rendered gameplay. Run it separately from the headless gates:
+
+```sh
+godot --audio-driver Dummy --path . --script tests/kit_scene_smoke.gd
+```
+
+The Dummy audio driver avoids requiring audible output. The smoke exercises all nine actions, camera pitch, projectile/wall creation and replay; it is not evidence of full-kit network action coverage.
+
 
 ## Deterministic screenshots
 
@@ -78,7 +105,7 @@ godot --path . --fixed-fps 64 --script tools/screenshot.gd -- \
   --scenario=all --output=/tmp/shove-captures
 ```
 
-Scenarios: `menu`, `arena`, `bhop`, `impact`, `ko`, `hud` (eight players), `tuning`, `debug`, `countdown`, `winner`. Default output is `user://screenshots`; `--output` accepts an absolute directory. Captures are 1280×800 PNGs. `--hold` keeps the staged window open.
+Scenarios: `menu`, `arena`, `bhop`, `impact`, `ko`, `hud`, `tuning`, `debug`, `countdown`, `winner`, `character`, `projectile`, `earth`, `water`, `fire`, `air`, `spike`, `wall_block`, `deflect`. Committed milestone images are in `docs/shots/m3/`. Default output is `user://screenshots`; `--output` accepts an absolute directory. Captures are 1280×800 PNGs. `--hold` keeps the staged window open.
 
 ## Live tuning and replay
 
@@ -91,29 +118,28 @@ Press **F1** or choose **Tuning** from the menu. Search by field name; fields ar
 - Tick rate and derived conversion/angle fields are read-only. Structural arena/audio changes rebuild the affected presentation; animation/feel values update directly.
 - Online clients can edit local camera/audio/visual/network controls; simulation settings belong to the host. Host changes are transmitted authoritatively. World-mutation dev hotkeys remain offline-only, except host F2/rematch.
 
-Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. After leaving an online session, F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams.
+Offline matches and the online host record InputCmd streams, initial World/tuning state, and every live tuning patch. Winners automatically save `user://replays/latest.json`; F11 saves the current prefix. Replay format v2 is a clean break and rejects v1 files. After leaving an online session, F12 or **Replay latest** plays the recorded stream, reports exact final-state verification, then restores the previous tuning. Clients do not possess other players' complete authoritative input streams. Determinism is promised for the same build.
 
 Dev mutations (spawn/remove bot, damage, teleport) and server-observed disconnections start a new recording segment at the changed World. Slow motion and hitstop affect scheduling, not the fixed simulation timestep. Replay reproduces simulation state, not online lobby names/colors.
 
 
 ## Architecture
 
-- `scripts/sim/`: scene-free movement, multiplayer World, deterministic bots and match state machine.
+- `scripts/sim/`: scene-free movement, multiplayer World, deterministic bots, match state machine, `Kits`, `AbilitySim` and `ProjectileSim`; these simulation modules are pure.
 - `scripts/tuning.gd`: centralized movement, combat, bot, camera, visual, effects, HUD and audio settings. Tick rate is an invariant.
 - `scripts/main.gd`: fixed-tick orchestration, code-built menus and presentation integration.
 - `scripts/view/`: procedural arena, avatars, effects, HUD, shaders and cached synthesized PCM audio.
 - `scripts/dev/`: reflected tuning/presets, typed replay persistence and visual debug gizmos.
 - `scripts/net/`: ENet authority/lobby, bounded compressed wire payloads, prediction/reconciliation and remote interpolation.
 - `DECISIONS.md` / `CHANGELOG.md`: milestone tradeoffs and verification history.
-
 ## Known rough edges and verification limits
 
-- Primitive art and analytical collision are intentionally simple. Compatibility uses distance fog and geometry halos rather than volumetric fog/post-process bloom; the optional Forward+ glow path was not visually verified on this machine.
+- Primitive art and analytical collision are intentionally simple.
 - Local prediction intentionally excludes remote-player body collision and combat. The server resolves these and reconciles the client; crowded/laggy brawls remain a playtesting target.
-- Localhost was verified with three real headless peers, two rendered peers, and an eight-player bot-filled lobby/play smoke. Internet/NAT behavior and eight separate human clients were not exercised.
+- Internet/NAT behavior and eight separate human clients have not been exercised.
 - Audio samples, loop/mute behavior and playback state were verified. Audible output could not be auditioned here: the WSL environment lacked `libpulse.so.0` and an ALSA device, so Godot fell back to Dummy audio. Use a host with a working audio driver; on Ubuntu/WSLg, check `libpulse0` and the PulseAudio/WSLg connection. `--audio-driver Dummy` is appropriate for automated runs, not audible play.
 - Some Godot 4.7.2 Dummy-audio exits report a few WAV/playback resource leaks despite explicit player cleanup. Test runners reject script/runtime errors; expected invalid-preset warnings and this shutdown warning are documented separately.
-- Replay determinism is verified within the tested engine build. Cross-version/platform floating-point identity is not promised.
+- Replay determinism is within the same build; cross-version/platform floating-point identity is not promised.
 
 ## Ten tuning experiments
 

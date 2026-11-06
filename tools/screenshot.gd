@@ -5,7 +5,7 @@ extends SceneTree
 ## --hold keeps the rendered game window open after capture for manual inspection.
 
 const CAPTURE_SIZE := Vector2i(1280, 800)
-const SCENARIOS := ["menu", "arena", "character", "bhop", "impact", "ko", "hud", "tuning", "debug", "countdown", "winner"]
+const SCENARIOS := ["menu", "arena", "character", "bhop", "impact", "ko", "hud", "tuning", "debug", "countdown", "winner", "projectile", "earth", "water", "fire", "air", "spike", "wall_block", "deflect"]
 const SETTLE_FRAMES := 3
 
 var _scenario := "all"
@@ -57,11 +57,12 @@ func _run() -> void:
 	var selected: Array = SCENARIOS if _scenario == "all" else [_scenario]
 	for scenario: String in selected:
 		var result: Variant = await app.call("capture_scenario", scenario)
-		if result is bool and not result:
-			_fail("Main scene could not prepare capture scenario '%s'." % scenario)
-			return
-		if result is Dictionary and not result.get("available", true):
-			_fail("Capture scenario '%s' is unavailable: %s" % [scenario, result.get("reason", "no reason supplied")])
+		if result is Dictionary:
+			if not result.get("available", false):
+				_fail("Capture scenario '%s' is unavailable: %s" % [scenario, result.get("reason", "no reason supplied")])
+				return
+		elif result != true:
+			_fail("Main scene failed to prepare capture scenario '%s'." % scenario)
 			return
 		# Await completed rendering, not a wall-clock delay or just physics ticks.
 		# The main scene supplies a deterministic, held scenario pose.

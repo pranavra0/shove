@@ -34,6 +34,9 @@ func _fixture() -> Dictionary:
 		player.velocity = Vector3.ZERO
 		player.on_ground = true
 		player.ground_angle = 0.0
+	world.next_entity_id = 3
+	world.projectiles[1] = {"id": 1, "position": Vector3(0.0, 1.0, 0.0), "velocity": Vector3.RIGHT, "owner": 2, "element": "earth", "slot": "basic_shot", "age": 0.1, "deflections": 0, "behavior": "level", "damage": 5.0, "kb_base": 4.0, "kb_scale": 0.2, "momentum": Vector3.ZERO, "size": 0.5, "duration": 2.0, "hitstun": 0.2, "kb_up": 1.0, "curve": 0.0, "gravity": 0.0, "homing": 0.0, "bounce_count": 0, "hit_ids": [], "spike_pop_speed": 0.0, "spike_damage_mult": 1.0, "spike_kb_mult": 1.0}
+	world.walls[2] = {"id": 2, "position": Vector3(2.0, 1.0, 0.0), "size": Vector3(1.0, 2.0, 0.5), "owner": 2, "element": "water", "age": 0.1, "duration": 4.0, "hp": 2, "hit_shoves": {}}
 	return world
 
 func _test_movement_ownership_and_combat() -> void:
@@ -45,20 +48,23 @@ func _test_movement_ownership_and_combat() -> void:
 	var moved: Dictionary = prediction.advance(command, 1.0 / 64.0)
 	_check(moved.players[1].position.x > world.players[1].position.x, "local movement advances")
 	_check(moved.players[1].attack_time > 0.0, "local windup is predicted")
-	_check(moved.players[2] == before.players[2], "remote state never advances")
 	_check(world == before, "begin and advance preserve input world")
+	_check(moved.projectiles == before.projectiles and moved.walls == before.walls and moved.next_entity_id == before.next_entity_id, "prediction preserves authoritative entities and allocation state")
 	command.move = Vector2.LEFT
 	var wire: Array = prediction.unacknowledged()
 	_check(float(wire[0].move[0]) == 1.0, "queued input owns immutable command wire")
 	wire[0].move[0] = -0.5
 	_check(float(prediction.unacknowledged()[0].move[0]) == 1.0, "wire return is independently owned")
 	moved.players[1].position = Vector3.ZERO
+	moved.projectiles[1].position = Vector3.ZERO
+	_check(prediction.predicted.projectiles[1].position == before.projectiles[1].position, "prediction return independently owns nested projectile state")
 	_check(prediction.predicted.players[1].position != Vector3.ZERO, "advance return independently owns state")
 	for tick in range(2, 40):
 		prediction.advance(InputCmd.new(Vector2.ZERO, false, false, 0.0, tick), 1.0 / 64.0)
 	_check(prediction.predicted.players[2].damage == 0.0, "predicted shove cannot deal damage")
 	_check(prediction.predicted.players[1].attack_hits.is_empty(), "predicted shove cannot claim hits")
 	_check(prediction.predicted.events.is_empty(), "prediction emits no authoritative combat or presentation events")
+	_check(prediction.predicted.projectiles == before.projectiles and prediction.predicted.walls == before.walls and prediction.predicted.next_entity_id == before.next_entity_id, "predicted combat cannot mutate authoritative entity state")
 	var falling: Dictionary = _fixture()
 	falling.players[1].position = Vector3(0.0, Tuning.KILL_PLANE - 1.0, 0.0)
 	falling.players[1].on_ground = false
@@ -77,7 +83,7 @@ func _test_ack_replay_and_stale() -> void:
 	prediction.advance(second, 0.03)
 	var authoritative: Dictionary = World.step(initial, {1: first}, 0.02)
 	authoritative.players[1].position.x -= 0.2
-	var expected: Dictionary = World.step({"tick": authoritative.tick, "players": {1: authoritative.players[1]}, "events": []}, {1: second}, 0.03)
+	var expected: Dictionary = World.step(authoritative, {1: second}, 0.03)
 	prediction.reconcile(authoritative, 1, 0.1)
 	_check(prediction.pending.size() == 1 and int(prediction.pending[0].tick) == 2, "ACK removes only acknowledged inputs")
 	_check(prediction.predicted.players[1].position.is_equal_approx(expected.players[1].position), "reconciliation replays remaining input with original duration")
@@ -102,21 +108,34 @@ func _test_interpolation_and_discontinuity() -> void:
 	prediction.begin(a, 1, 1.0)
 	var b: Dictionary = a.duplicate(true)
 	b.tick = 1
+	b.projectiles[1].position.x = 2.0
+	b.projectiles[1].velocity = Vector3(3.0, 0.0, 0.0)
+	b.projectiles[3] = {"id": 3, "position": Vector3(9.0, 1.0, 0.0), "velocity": Vector3.ZERO, "owner": 2, "element": "fire", "slot": "curve_shot", "age": 0.0, "deflections": 0, "behavior": "spike", "damage": 7.0, "kb_base": 4.0, "kb_scale": 0.2, "momentum": Vector3.ZERO, "size": 0.5, "duration": 2.0, "hitstun": 0.2, "kb_up": 1.0, "curve": 0.0, "gravity": 0.0, "homing": 0.0, "bounce_count": 0, "hit_ids": [], "spike_pop_speed": 0.0, "spike_damage_mult": 1.0, "spike_kb_mult": 1.0}
 	b.players[2].position.x += 2.0
 	b.players[2].yaw = deg_to_rad(-170.0)
 	prediction.reconcile(b, 0, 1.2)
 	var rendered: Dictionary = prediction.render_world(1.1 + Tuning.NET_INTERPOLATION, 0.0)
 	_check(is_equal_approx(rendered.players[2].position.x, 5.0), "remote position interpolates snapshot bracket")
+	_check(is_equal_approx(rendered.projectiles[1].position.x, 1.0) and is_equal_approx(rendered.projectiles[1].velocity.x, 2.0), "same projectile ID interpolates position and velocity")
+	_check(not rendered.projectiles.has(3), "projectile membership comes from the historical bracket, not the newest snapshot")
 	_check(absf(absf(float(rendered.players[2].yaw)) - PI) < 0.001, "yaw interpolation uses shortest arc")
 	_check(prediction.render_world(0.0, 0.0).players[2].position == a.players[2].position, "before history snaps oldest")
 	_check(prediction.render_world(5.0, 0.0).players[2].position == b.players[2].position, "after history snaps newest without extrapolation")
+	_check(prediction.render_world(1.2 + Tuning.NET_INTERPOLATION, 0.0).projectiles.has(3), "new projectile joins membership at its snapshot boundary")
 	var c: Dictionary = b.duplicate(true)
 	c.tick = 2
 	c.players[2].stocks -= 1
 	c.players[2].position.x += 1.0
+	c.projectiles[1].owner = 1
+	c.projectiles[1].behavior = "lob"
+	c.projectiles[1].position.x = 8.0
+	c.projectiles.erase(3)
 	prediction.reconcile(c, 1, 1.4)
 	rendered = prediction.render_world(1.3 + Tuning.NET_INTERPOLATION, 0.0)
 	_check(rendered.players[2].position == c.players[2].position, "stock change snaps rather than lerping respawn")
+	_check(rendered.projectiles[1].position == b.projectiles[1].position or rendered.projectiles[1].position == c.projectiles[1].position, "ownership and behavior changes snap projectile state instead of blending")
+	_check((rendered.projectiles[1].owner == b.projectiles[1].owner and rendered.projectiles[1].behavior == b.projectiles[1].behavior) or (rendered.projectiles[1].owner == c.projectiles[1].owner and rendered.projectiles[1].behavior == c.projectiles[1].behavior), "owner and behavior switch together at the projectile boundary")
+	_check(prediction.render_world(1.4 + Tuning.NET_INTERPOLATION, 0.0).projectiles.has(1) and not prediction.render_world(1.4 + Tuning.NET_INTERPOLATION, 0.0).projectiles.has(3), "despawned projectile leaves membership at its snapshot boundary")
 	var d: Dictionary = c.duplicate(true)
 	d.tick = 3
 	d.players[2].position.x += Tuning.NET_TELEPORT_DISTANCE + 1.0

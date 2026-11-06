@@ -25,11 +25,19 @@ func show_setup(hosting: bool) -> void:
 	app._clear_menu("Host a match" if hosting else "Join a match")
 	app._menu_label("2–8 players")
 	app._menu_field("Player name", "PlayerName", "Player")
+	app._menu_label("Player color")
 	var colors := OptionButton.new()
 	colors.name = "PlayerColor"
 	for label in COLOR_NAMES:
 		colors.add_item(label)
 	app.menu_panel.add_child(colors)
+	app._menu_label("Element")
+	var elements := OptionButton.new()
+	elements.name = "PlayerElement"
+	for element in Kits.ELEMENTS:
+		elements.add_item(str(element).capitalize())
+	elements.select(Kits.ELEMENTS.find("earth"))
+	app.menu_panel.add_child(elements)
 	if not hosting:
 		app._menu_field("Server IP", "ServerAddress", "127.0.0.1")
 	app._menu_label("UDP port")
@@ -43,12 +51,13 @@ func show_setup(hosting: bool) -> void:
 		var player_name: String = app.menu_panel.find_child("PlayerName", true, false).text.strip_edges()
 		var selected_port: int = int(port.value)
 		var color: int = colors.selected
+		var element: String = Kits.ELEMENTS[elements.selected]
 		var error: Error
 		if hosting:
-			error = app.network.host(selected_port, player_name, color)
+			error = app.network.host(selected_port, player_name, color, element)
 		else:
 			var address: String = app.menu_panel.find_child("ServerAddress", true, false).text.strip_edges()
-			error = app.network.join(address, selected_port, player_name, color)
+			error = app.network.join(address, selected_port, player_name, color, element)
 		if error != OK:
 			show_error("Cannot open connection: " + error_string(error))
 		elif hosting:
@@ -74,8 +83,8 @@ func show_lobby() -> void:
 			human_count += 1
 		var row := HBoxContainer.new()
 		var label := Label.new()
-		label.text = "%s%s" % [member.name, " (you)" if id == net.local_id else ""]
-		label.custom_minimum_size.x = 225
+		label.text = "%s · %s%s" % [member.name, str(member.get("element", "earth")).capitalize(), " (you)" if id == net.local_id else ""]
+		label.custom_minimum_size.x = 260
 		row.add_child(label)
 		var status := Label.new()
 		status.text = "BOT" if member.get("bot", false) else ("READY" if member.ready else "WAITING")
@@ -89,13 +98,28 @@ func show_lobby() -> void:
 		ready.button_pressed = self_member.ready
 		ready.toggled.connect(net.set_ready)
 		app.menu_panel.add_child(ready)
+		app._menu_label("Player color")
 		var colors := OptionButton.new()
 		colors.name = "LobbyColor"
 		for label in COLOR_NAMES:
 			colors.add_item(label)
 		colors.select(clampi(int(self_member.color), 0, COLOR_NAMES.size() - 1))
-		colors.item_selected.connect(func(index: int) -> void: net.set_profile(self_member.name, index, self_member.ready))
+		colors.item_selected.connect(func(index: int) -> void:
+			var profile: Dictionary = net.members.get(net.local_id, self_member)
+			net.set_profile(str(profile.name), index, bool(profile.ready), str(profile.get("element", "earth")))
+		)
 		app.menu_panel.add_child(colors)
+		app._menu_label("Element")
+		var elements := OptionButton.new()
+		elements.name = "LobbyElement"
+		for element in Kits.ELEMENTS:
+			elements.add_item(str(element).capitalize())
+		elements.select(maxi(0, Kits.ELEMENTS.find(str(self_member.get("element", "earth")))))
+		elements.item_selected.connect(func(index: int) -> void:
+			var profile: Dictionary = net.members.get(net.local_id, self_member)
+			net.set_profile(str(profile.name), int(profile.color), bool(profile.ready), Kits.ELEMENTS[index])
+		)
+		app.menu_panel.add_child(elements)
 	if net.hosting:
 		app._menu_label("Bot fill")
 		var fill := OptionButton.new()

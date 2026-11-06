@@ -25,6 +25,7 @@ var _peer: ENetMultiplayerPeer
 var _prediction: ClientPrediction
 var _profile: Dictionary = {}
 var _commands: Dictionary = {}
+var _held_commands: Dictionary = {}
 var _acks: Dictionary = {}
 var _received: Dictionary = {}
 var _echo: Dictionary = {}
@@ -52,7 +53,7 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_connection_failed)
 	multiplayer.server_disconnected.connect(_server_disconnected)
 
-func host(port: int, player_name: String, color: int) -> Error:
+func host(port: int, player_name: String, color: int, element: String = "earth") -> Error:
 	close()
 	_peer = ENetMultiplayerPeer.new()
 	var error: Error = _peer.create_server(port, clampi(Tuning.NET_MAX_PLAYERS, 2, 8) - 1, 3)
@@ -65,13 +66,14 @@ func host(port: int, player_name: String, color: int) -> Error:
 	connected = true
 	local_id = 1
 	_rng.seed = Tuning.NET_SEED
-	members[1] = _member(player_name, color, false)
+	_profile = _member(player_name, color, false, element)
+	members[1] = _profile.duplicate(true)
 	lobby_updated.emit()
 	return OK
 
-func join(address: String, port: int, player_name: String, color: int) -> Error:
+func join(address: String, port: int, player_name: String, color: int, element: String = "earth") -> Error:
 	close()
-	_profile = _member(player_name, color, false)
+	_profile = _member(player_name, color, false, element)
 	_peer = ENetMultiplayerPeer.new()
 	var error: Error = _peer.create_client(address, port, 3)
 	if error != OK:
@@ -101,6 +103,7 @@ func close() -> void:
 	recording = null
 	_prediction = null
 	_commands.clear()
+	_held_commands.clear()
 	_acks.clear()
 	_received.clear()
 	_echo.clear()
@@ -111,19 +114,22 @@ func close() -> void:
 	_reset_clock()
 	stats = {"ping": 0.0, "snapshot_rate": 0.0, "correction": 0.0, "input_depth": 0, "dropped": 0}
 
-func set_profile(player_name: String, color: int, ready: bool) -> void:
+func set_profile(player_name: String, color: int, ready: bool, element: String = "earth") -> void:
 	if not active or not connected:
 		return
-	var profile := _member(player_name, color, ready)
+	var profile := _member(player_name, color, ready, element)
+	_profile = profile.duplicate(true)
 	if hosting:
 		members[1] = profile
 		_broadcast_lobby()
 	else:
-		rpc_id(1, "_profile_rpc", profile)
+		members[local_id] = profile.duplicate(true)
+		_schedule(1, "_profile_rpc", _profile_packet(profile), true)
 
 func set_ready(ready: bool) -> void:
 	if members.has(local_id):
-		set_profile(str(members[local_id].name), int(members[local_id].color), ready)
+		var profile: Dictionary = members[local_id]
+		set_profile(str(profile.name), int(profile.color), ready, str(profile.element))
 
 func set_bot_fill(count: int) -> void:
 	if not hosting or str(flow.phase) != "lobby":
@@ -149,8 +155,11 @@ func start_match() -> bool:
 	_acks.clear()
 	_echo.clear()
 	_bot_memory.clear()
+	_held_commands.clear()
 	_pending_settings.clear()
 	world = World.create(members.keys())
+	for id in members:
+		World.set_element(world, int(id), str(members[id].get("element", "earth")))
 	authoritative_world = world.duplicate(true)
 	flow = MatchSim.create()
 	flow.phase = "countdown"
@@ -225,15 +234,33 @@ func _server_tick() -> void:
 				elif id == 1:
 					cmd = _sample_command()
 				else:
-					cmd = _commands.get(id, InputCmd.new())
-					_acks[id] = cmd.tick
+					if _commands.has(id) and not _commands[id].is_empty():
+						var queue: Array = _commands[id]
+						var next_value: Variant = queue.pop_front()
+						cmd = next_value as InputCmd
+						if queue.is_empty():
+							_commands.erase(id)
+						else:
+							_commands[id] = queue
+						_acks[id] = cmd.tick
+						var held := InputCmd.new(cmd.move, cmd.jump, false, cmd.yaw, cmd.tick)
+						held.pitch = cmd.pitch
+						held.moves = cmd.moves & InputCmd.HELD_MOVES
+						_held_commands[id] = held
+					else:
+						var fallback: InputCmd
+						if _held_commands.has(id):
+							fallback = _held_commands[id]
+						else:
+							fallback = InputCmd.new(Vector2.ZERO, false, false, world.players[id].yaw, int(_acks.get(id, 0)))
+						cmd = InputCmd.new(fallback.move, fallback.jump, false, fallback.yaw, int(_acks.get(id, 0)))
+						cmd.pitch = fallback.pitch
+						cmd.moves = fallback.moves & InputCmd.HELD_MOVES
+					# Fallback keeps movement/jump/yaw/pitch and BASIC_SHOT/QUICK_FIRE, never edges.
 				commands[id] = cmd
 			recording.record(commands, _pending_settings)
 			_pending_settings.clear()
 			world = World.step(world, commands, Tuning.FIXED_DELTA)
-			for id in _commands:
-				var old: InputCmd = _commands[id]
-				_commands[id] = InputCmd.new(old.move, false, false, old.yaw, old.tick)
 			if not world.events.is_empty():
 				_event_serial += 1
 				var event_packet := {"epoch": epoch, "id": _event_serial, "tick": world.tick, "events": world.events, "world": world}
@@ -302,12 +329,12 @@ func _hello_rpc(data: Dictionary) -> void:
 		return
 	_pending_peers.erase(sender)
 	if str(flow.phase) != "lobby":
-		rpc_id(sender, "_rejected_rpc", {"reason": "Match already in progress; join from the lobby"})
+		_schedule(sender, "_rejected_rpc", {"reason": "Match already in progress; join from the lobby"}, true)
 		return
 	if _human_count() >= clampi(Tuning.NET_MAX_PLAYERS, 2, 8) or not _valid_profile(data):
-		rpc_id(sender, "_rejected_rpc", {"reason": "Lobby full or invalid profile"})
+		_schedule(sender, "_rejected_rpc", {"reason": "Lobby full or invalid profile"}, true)
 		return
-	members[sender] = _member(data.name, data.color, data.ready)
+	members[sender] = _member(data.name, data.color, data.ready, data.element)
 	bot_fill = mini(bot_fill, clampi(Tuning.NET_MAX_PLAYERS, 2, 8) - _human_count())
 	_sync_bots()
 	_broadcast_lobby()
@@ -316,7 +343,7 @@ func _hello_rpc(data: Dictionary) -> void:
 func _profile_rpc(data: Dictionary) -> void:
 	var sender: int = multiplayer.get_remote_sender_id()
 	if hosting and members.has(sender) and _valid_profile(data):
-		members[sender] = _member(data.name, data.color, data.ready)
+		members[sender] = _member(data.name, data.color, data.ready, data.element)
 		_broadcast_lobby()
 
 @rpc("authority", "call_remote", "reliable", 0)
@@ -324,6 +351,9 @@ func _lobby_rpc(data: Dictionary) -> void:
 	if hosting or not data.has_all(["members", "bots", "epoch", "lobby"]) or not data.members is Dictionary or not data.epoch is int or data.epoch < epoch:
 		return
 	members = data.members.duplicate(true)
+	if members.has(local_id):
+		var self_profile: Dictionary = members[local_id]
+		_profile = _member(str(self_profile.name), int(self_profile.color), bool(self_profile.ready), str(self_profile.get("element", "earth")))
 	bot_fill = int(data.bots)
 	connected = true
 	if data.lobby:
@@ -365,23 +395,30 @@ func _input_rpc(packet: PackedByteArray) -> void:
 	if not hosting or not members.has(sender) or members[sender].bot or world.is_empty() or not data.has_all(["epoch", "commands", "sent"]) or data.epoch != epoch or not data.commands is Array or data.commands.size() > 64 or not _finite(data.sent):
 		return
 	var latest: int = int(_received.get(sender, 0))
-	var accepted: InputCmd
 	var previous: int = -1
+	var parsed: Array = []
 	for wire in data.commands:
 		if not wire is Dictionary:
 			return
 		var cmd: InputCmd = InputCmd.from_dict(wire)
 		if cmd == null or cmd.tick <= 0 or cmd.tick <= previous or cmd.tick > latest + clampi(Tuning.NET_MAX_PENDING, 1, 4096) + 64:
 			return
-		var move: Array = wire.move
-		if Vector2(float(move[0]), float(move[1])).length_squared() > 1.00001 or absf(cmd.yaw) > 1000000.0:
-			return
 		previous = cmd.tick
-		if cmd.tick > latest:
-			accepted = cmd
-	if accepted != null:
-		_received[sender] = accepted.tick
-		_commands[sender] = accepted
+		parsed.append(cmd)
+	var queue: Array = _commands.get(sender, [])
+	var queue_limit: int = clampi(Tuning.NET_MAX_PENDING, 1, 4096)
+	for value in parsed:
+		var cmd: InputCmd = value
+		if cmd.tick <= latest:
+			continue
+		if queue.size() >= queue_limit:
+			break
+		# Queue consumes release and edge intents once; fallback retains only HELD_MOVES.
+		queue.append(cmd)
+		latest = cmd.tick
+	if latest > int(_received.get(sender, 0)):
+		_received[sender] = latest
+		_commands[sender] = queue
 		_echo[sender] = float(data.sent)
 
 @rpc("authority", "call_remote", "unreliable_ordered", 1)
@@ -446,6 +483,7 @@ func _peer_disconnected(id: int) -> void:
 		return
 	members.erase(id)
 	_commands.erase(id)
+	_held_commands.erase(id)
 	_received.erase(id)
 	_acks.erase(id)
 	_echo.erase(id)
@@ -463,7 +501,7 @@ func _connected_to_server() -> void:
 	if not active or hosting:
 		return
 	local_id = multiplayer.get_unique_id()
-	rpc_id(1, "_hello_rpc", _profile)
+	_schedule(1, "_hello_rpc", _profile_packet(_profile), true)
 
 func _connection_failed() -> void:
 	if active and not hosting:
@@ -477,12 +515,16 @@ func _fail(reason: String) -> void:
 	close()
 	connection_error.emit(reason)
 
-func _member(player_name: String, color: int, ready: bool) -> Dictionary:
+func _member(player_name: String, color: int, ready: bool, element: String = "earth") -> Dictionary:
 	var clean: String = player_name.strip_edges().replace("\n", " ").replace("\r", " ").left(24)
-	return {"name": clean if not clean.is_empty() else "Player", "color": clampi(color, 0, maxi(0, Tuning.HUD_PLAYER_COLORS.size() - 1)), "ready": ready, "bot": false}
+	var selected_element: String = element if Kits.ELEMENTS.has(element) else "earth"
+	return {"name": clean if not clean.is_empty() else "Player", "color": clampi(color, 0, maxi(0, Tuning.HUD_PLAYER_COLORS.size() - 1)), "ready": ready, "element": selected_element, "bot": false}
+
+func _profile_packet(profile: Dictionary) -> Dictionary:
+	return {"name": str(profile.name), "color": int(profile.color), "ready": bool(profile.ready), "element": str(profile.get("element", "earth"))}
 
 func _valid_profile(data: Dictionary) -> bool:
-	return data.size() <= 4 and data.has_all(["name", "color", "ready"]) and data.name is String and data.name.length() <= 128 and data.color is int and data.ready is bool
+	return data.size() == 4 and data.has_all(["name", "color", "ready", "element"]) and data.name is String and data.name.length() <= 128 and data.color is int and data.color >= 0 and data.color < Tuning.HUD_PLAYER_COLORS.size() and data.ready is bool and data.element is String and Kits.ELEMENTS.has(data.element)
 
 func _human_count() -> int:
 	var count: int = 0
@@ -497,9 +539,16 @@ func _sync_bots() -> void:
 			members.erase(id)
 	bot_fill = clampi(bot_fill, 0, clampi(Tuning.NET_MAX_PLAYERS, 2, 8) - _human_count())
 	for index in range(bot_fill):
-		var profile := _member("Bot %d" % (index + 1), index + _human_count(), true)
+		var bot_id: int = -index - 2
+		var profile := _member("Bot %d" % (index + 1), index + _human_count(), true, Kits.ELEMENTS[_bot_element_index(bot_id)])
 		profile.bot = true
-		members[-index - 2] = profile
+		members[bot_id] = profile
+
+func _bot_element_index(roster_id: int) -> int:
+	var value: int = (int(Tuning.NET_SEED) ^ (roster_id * 0x45d9f3b)) & 0x7fffffff
+	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
+	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
+	return posmod(value ^ (value >> 16), Kits.ELEMENTS.size())
 
 func _broadcast_lobby() -> void:
 	_broadcast("_lobby_rpc", {"members": members, "bots": bot_fill, "epoch": epoch, "lobby": str(flow.phase) == "lobby"}, true)
@@ -514,19 +563,25 @@ func _schedule(target: int, method: String, data: Dictionary, reliable: bool) ->
 	if not reliable and _rng.randf() < clampf(Tuning.NET_PACKET_LOSS, 0.0, 1.0):
 		stats.dropped += 1
 		return
-	# Reliable controls use ENet's ordered reliable channel without simulated loss/delay.
-	# This prevents queued settings/start/final controls overtaking one another.
 	if reliable:
+		var raw: PackedByteArray = var_to_bytes(data)
+		if raw.is_empty() or raw.size() > 65536:
+			stats.dropped += 1
+			return
 		rpc_id(target, method, data)
+		return
+	var encoded: PackedByteArray = _encode_unreliable(data)
+	if encoded.is_empty():
+		stats.dropped += 1
 		return
 	var delay: float = maxf(0.0, Tuning.NET_LATENCY_MS + _rng.randf_range(-Tuning.NET_JITTER_MS, Tuning.NET_JITTER_MS)) / 1000.0
 	if delay <= 0.0:
-		rpc_id(target, method, _encode_unreliable(data))
+		rpc_id(target, method, encoded)
 		return
 	if _outbox.size() >= 4096:
 		stats.dropped += 1
 		return
-	_outbox.append({"target": target, "method": method, "data": _encode_unreliable(data), "due": _now() + delay, "epoch": epoch})
+	_outbox.append({"target": target, "method": method, "data": encoded, "due": _now() + delay, "epoch": epoch})
 
 func _flush_outbox() -> void:
 	var now: float = _now()
@@ -561,7 +616,11 @@ func _finite(value: Variant) -> bool:
 # Repeated dictionary keys compress well; keep unreliable snapshots below ENet's MTU.
 # Decompression is bounded and object decoding is never enabled.
 func _encode_unreliable(data: Dictionary) -> PackedByteArray:
-	return var_to_bytes(data).compress(FileAccess.COMPRESSION_DEFLATE)
+	var raw: PackedByteArray = var_to_bytes(data)
+	if raw.is_empty() or raw.size() > 65536:
+		return PackedByteArray()
+	var encoded: PackedByteArray = raw.compress(FileAccess.COMPRESSION_DEFLATE)
+	return encoded if not encoded.is_empty() and encoded.size() <= 8192 else PackedByteArray()
 
 func _decode_unreliable(packet: PackedByteArray) -> Dictionary:
 	if packet.is_empty() or packet.size() > 8192:

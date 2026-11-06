@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3 M3 — Kits, abilities and projectiles
+
+- Added four selectable elemental kits with nine move slots each, kit-scaled movement/recovery, held/edge input handling, pitch-driven curve-shot spike/lob behavior, and horizontal/vertical walls. Projectile simulation covers kit-specific data, shove deflection, and wall/projectile contacts; World remains the pure authoritative simulation.
+- Added replay format v2 for kit/input/entity state and extended prediction/interpolation to snapshots containing projectiles and walls. Local prediction remains limited to the local player; authoritative projectiles and walls are not locally predicted.
+- Verified all 12 headless suites, actual offline scene smoke, and rendered `tests/kit_scene_smoke.gd` covering nine actions, pitch, entities and replay. A real ENet host with two clients completed a bot-driven natural match and rematch under simulated latency/jitter/loss; this is not full-kit network action proof. Captured M3 presentation evidence is in `docs/shots/m3/`.
+- M5 remains responsible for complete per-move/per-element editor tuning, corresponding dev tooling/network acceptance, and full-move network proof. No claim is made that every kit action has been exercised over the network.
+
 ## v0.3 M2 — Minimal HUD and menus
 
 - Replaced ornate player cards with steady damage numbers/discrete color steps and filled stock squares; added a compact speed meter, glyph-only cooldown bars and outlined edge triangles.

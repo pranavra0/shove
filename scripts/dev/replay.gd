@@ -56,7 +56,7 @@ func save(path: String) -> Error:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return FileAccess.get_open_error()
-	file.store_string(JSON.stringify({"version": 1, "tape": encoded}, "", true, true))
+	file.store_string(JSON.stringify({"version": 2, "tape": encoded}, "", true, true))
 	return file.get_error()
 
 func load_file(path: String) -> Error:
@@ -67,7 +67,7 @@ func load_file(path: String) -> Error:
 	if json.parse(file.get_as_text()) != OK:
 		return ERR_PARSE_ERROR
 	var envelope: Variant = json.data
-	if not envelope is Dictionary or envelope.size() != 2 or envelope.get("version") != 1 or not envelope.has("tape"):
+	if not envelope is Dictionary or envelope.size() != 2 or envelope.get("version") != 2 or not envelope.has("tape"):
 		return ERR_INVALID_DATA
 	var decoded: Dictionary = _decode(envelope.tape)
 	if not decoded.ok or not _valid(decoded.value):
@@ -193,10 +193,14 @@ static func _valid(payload: Variant) -> bool:
 		return false
 	if not _valid_world(payload.initial) or not _valid_world(payload.final) or not payload.settings is Dictionary or not payload.frames is Array:
 		return false
-	if payload.final.tick != payload.initial.tick + payload.frames.size() or payload.initial.players.keys() != payload.final.players.keys():
+	if not _valid_codec_value(payload.settings) or payload.final.tick != payload.initial.tick + payload.frames.size() or payload.initial.players.keys() != payload.final.players.keys():
+		return false
+	if payload.frames.size() > 1000000:
 		return false
 	for frame in payload.frames:
 		if not frame is Dictionary or frame.size() != 2 or not frame.has_all(["commands", "settings"]) or not frame.commands is Dictionary or not frame.settings is Dictionary:
+			return false
+		if frame.commands.size() > 8 or not _valid_codec_value(frame.settings):
 			return false
 		for id in frame.commands:
 			if not id is int or not payload.initial.players.has(id) or not frame.commands[id] is Dictionary:
@@ -207,28 +211,139 @@ static func _valid(payload: Variant) -> bool:
 	return true
 
 static func _valid_world(world: Variant) -> bool:
-	if not world is Dictionary or world.size() != 3 or not world.has_all(["tick", "players", "events"]):
+	if not world is Dictionary or world.size() != 6 or not world.has_all(["tick", "players", "events", "projectiles", "walls", "next_entity_id"]):
 		return false
-	if not world.tick is int or world.tick < 0 or not world.players is Dictionary or not world.events is Array:
+	if not world.tick is int or world.tick < 0 or not world.players is Dictionary or world.players.size() > 8:
 		return false
+	if not world.events is Array or world.events.size() > 512 or not world.projectiles is Dictionary or world.projectiles.size() > 128:
+		return false
+	if not world.walls is Dictionary or world.walls.size() > 64 or not world.next_entity_id is int or world.next_entity_id < 1:
+		return false
+	var max_id: int = 0
 	for id in world.players:
-		if not id is int or not world.players[id] is Dictionary:
+		if not id is int or not world.players[id] is Dictionary or not _valid_player(world.players[id], world.players):
 			return false
-		var player: Dictionary = world.players[id]
-		if player.size() != 13 or not player.has_all(["position", "velocity", "on_ground", "ground_angle", "yaw", "damage", "stocks", "hitstun", "invuln", "attack_time", "cooldown", "attack_hits", "spawn"]):
+	for id in world.projectiles:
+		if not id is int or id <= 0 or world.walls.has(id) or not world.projectiles[id] is Dictionary:
 			return false
-		for field in ["position", "velocity", "spawn"]:
-			if not player[field] is Vector3 or not player[field].is_finite():
-				return false
-		for field in ["ground_angle", "yaw", "damage", "hitstun", "invuln", "attack_time", "cooldown"]:
-			if not (player[field] is float or player[field] is int) or not is_finite(float(player[field])):
-				return false
-		if not player.on_ground is bool or not player.stocks is int or not player.attack_hits is Array:
+		var projectile: Dictionary = world.projectiles[id]
+		if not _valid_projectile(projectile, id, world.players):
 			return false
-		for hit in player.attack_hits:
-			if not hit is int or not world.players.has(hit):
-				return false
+		max_id = maxi(max_id, id)
+	for id in world.walls:
+		if not id is int or id <= 0 or not world.walls[id] is Dictionary:
+			return false
+		var wall: Dictionary = world.walls[id]
+		if not _valid_wall(wall, id, world.players):
+			return false
+		max_id = maxi(max_id, id)
+	if world.next_entity_id <= max_id:
+		return false
 	for event in world.events:
 		if not event is Dictionary or not event.get("type") is String or not event.get("player") is int or not world.players.has(event.player):
 			return false
+		if not _valid_codec_value(event):
+			return false
 	return true
+
+static func _valid_player(player: Dictionary, players: Dictionary) -> bool:
+	var fields: Array = ["position", "velocity", "on_ground", "ground_angle", "yaw", "damage", "stocks", "hitstun", "invuln", "attack_time", "cooldown", "attack_hits", "spawn", "element", "cooldowns", "move_state", "recovery_used", "jump_held", "down_dashing", "dash_time", "chain_timer", "chain_hits", "chain_target", "attack_serial"]
+	if player.size() != fields.size() or not player.has_all(fields):
+		return false
+	for field in ["position", "velocity", "spawn"]:
+		if not player[field] is Vector3 or not player[field].is_finite():
+			return false
+	for field in ["ground_angle", "yaw", "damage", "hitstun", "invuln", "attack_time", "cooldown", "dash_time", "chain_timer"]:
+		if not _finite_number(player[field]):
+			return false
+	if not player.on_ground is bool or not player.jump_held is bool or not player.down_dashing is bool:
+		return false
+	if not player.stocks is int or player.stocks < 0 or not player.recovery_used is int or player.recovery_used < 0 or player.recovery_used > 2 or not player.chain_hits is int or player.chain_hits < 0 or not player.chain_target is int or (player.chain_target != -1 and not players.has(player.chain_target)) or not player.attack_serial is int or player.attack_serial < 0:
+		return false
+	if not _valid_element(player.element) or not player.attack_hits is Array or player.attack_hits.size() > 8:
+		return false
+	for hit in player.attack_hits:
+		if not hit is int or not players.has(hit):
+			return false
+	if not player.cooldowns is Dictionary or player.cooldowns.size() > 9:
+		return false
+	for slot in player.cooldowns:
+		if not _valid_slot(slot) or not _finite_number(player.cooldowns[slot]) or player.cooldowns[slot] < 0.0:
+			return false
+	var state: Variant = player.move_state
+	if not state is Dictionary:
+		return false
+	if state.is_empty():
+		return true
+	if state.size() != 6 or not state.has_all(["slot", "windup", "duration", "aim", "strafe", "activated"]):
+		return false
+	return _valid_slot(state.get("slot")) and _finite_number(state.windup) and state.windup >= 0.0 and _finite_number(state.duration) and state.duration >= 0.0 and state.aim is Vector3 and state.aim.is_finite() and _finite_number(state.strafe) and state.activated is bool
+
+static func _valid_projectile(entity: Dictionary, id: int, players: Dictionary) -> bool:
+	var fields: Array = ["id", "position", "velocity", "owner", "element", "slot", "age", "deflections", "behavior", "damage", "kb_base", "kb_scale", "momentum", "size", "duration", "hitstun", "kb_up", "curve", "gravity", "homing", "bounce_count", "hit_ids", "spike_pop_speed", "spike_damage_mult", "spike_kb_mult"]
+	if entity.size() != fields.size() or not entity.has_all(fields) or not entity.id is int or entity.id != id:
+		return false
+	if not entity.position is Vector3 or not entity.position.is_finite() or not entity.velocity is Vector3 or not entity.velocity.is_finite() or not entity.momentum is Vector3 or not entity.momentum.is_finite():
+		return false
+	if not entity.owner is int or not players.has(entity.owner) or not _valid_element(entity.element) or not _valid_projectile_slot(entity.slot):
+		return false
+	if not entity.behavior is String or not ["level", "spike", "lob", "curve"].has(entity.behavior) or not entity.hit_ids is Array or entity.hit_ids.size() > 8:
+		return false
+	for field in ["age", "damage", "kb_base", "kb_scale", "size", "duration", "hitstun", "kb_up", "gravity", "homing", "spike_pop_speed", "spike_damage_mult", "spike_kb_mult"]:
+		if not _finite_number(entity[field]) or entity[field] < 0.0:
+			return false
+	if not _finite_number(entity.curve):
+		return false
+	if entity.size <= 0.0 or entity.duration <= 0.0 or not entity.deflections is int or entity.deflections < 0 or entity.deflections > 1000000 or not entity.bounce_count is int or entity.bounce_count < 0 or entity.bounce_count > 1000000:
+		return false
+	for hit in entity.hit_ids:
+		if not hit is int or not players.has(hit):
+			return false
+	return true
+
+static func _valid_wall(entity: Dictionary, id: int, players: Dictionary) -> bool:
+	var fields: Array = ["id", "position", "size", "owner", "element", "age", "duration", "hp", "hit_shoves"]
+	if entity.size() != fields.size() or not entity.has_all(fields) or not entity.id is int or entity.id != id or not entity.position is Vector3 or not entity.position.is_finite() or not entity.size is Vector3 or not entity.size.is_finite() or entity.size.x <= 0.0 or entity.size.y <= 0.0 or entity.size.z <= 0.0 or not entity.owner is int or not players.has(entity.owner) or not _valid_element(entity.element) or not _finite_number(entity.age) or entity.age < 0.0 or not _finite_number(entity.duration) or entity.duration <= 0.0 or not entity.hp is int or entity.hp <= 0 or not entity.hit_shoves is Dictionary or entity.hit_shoves.size() > 8:
+		return false
+	for owner in entity.hit_shoves:
+		if not owner is int or not players.has(owner) or not entity.hit_shoves[owner] is int or entity.hit_shoves[owner] < 0:
+			return false
+	return true
+
+static func _valid_codec_value(value: Variant, depth: int = 0) -> bool:
+	if depth > 64:
+		return false
+	match typeof(value):
+		TYPE_BOOL, TYPE_STRING, TYPE_INT:
+			return true
+		TYPE_FLOAT:
+			return is_finite(value)
+		TYPE_VECTOR2:
+			return value.is_finite()
+		TYPE_VECTOR3:
+			return value.is_finite()
+		TYPE_COLOR:
+			return is_finite(value.r) and is_finite(value.g) and is_finite(value.b) and is_finite(value.a)
+		TYPE_ARRAY:
+			for item in value:
+				if not _valid_codec_value(item, depth + 1):
+					return false
+			return true
+		TYPE_DICTIONARY:
+			for key in value:
+				if not (key is String or key is int) or not _valid_codec_value(key, depth + 1) or not _valid_codec_value(value[key], depth + 1):
+					return false
+			return true
+	return false
+
+static func _finite_number(value: Variant) -> bool:
+	return (value is float or value is int) and is_finite(float(value))
+
+static func _valid_element(element: Variant) -> bool:
+	return element is String and ["earth", "water", "fire", "air"].has(element)
+
+static func _valid_slot(slot: Variant) -> bool:
+	return slot is String and ["basic_shot", "curve_shot", "quick_fire", "shove", "high_jump", "down_dash", "wall", "h_dash", "recovery"].has(slot)
+
+static func _valid_projectile_slot(slot: Variant) -> bool:
+	return ["basic_shot", "curve_shot", "quick_fire"].has(slot)

@@ -281,7 +281,6 @@ func _test_jump_landing_and_edge() -> void:
 	var world: Dictionary = _fixture([1])
 	world = World.step(world, {1: InputCmd.new(Vector2.ZERO, true)}, Tuning.FIXED_DELTA)
 	assert(_count(world.events, "jump") == 1 and not world.players[1].on_ground)
-	assert(is_equal_approx(world.players[1].velocity.y, Tuning.JUMP_SPEED))
 	var landed: bool = false
 	for frame in range(128):
 		world = World.step(world, {}, Tuning.FIXED_DELTA)

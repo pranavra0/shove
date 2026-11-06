@@ -34,6 +34,8 @@ static func bounds(name: String, value: Variant) -> Vector2:
 	var magnitude: float = absf(float(value))
 	var high: float = maxf(1.0, magnitude * 8.0)
 	var low: float = 0.0
+	if name == "WALL_HORIZONTAL_THRESHOLD":
+		return Vector2(-1.0, 0.0)
 	if name == "NET_PORT":
 		return Vector2(1.0, 65535.0)
 	if name == "NET_MAX_PLAYERS":
